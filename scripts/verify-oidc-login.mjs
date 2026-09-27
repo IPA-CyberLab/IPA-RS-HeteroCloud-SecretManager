@@ -14,12 +14,20 @@ try {
   await page.goto(origin + '/ui/', { waitUntil: 'networkidle', timeout: 20000 });
   await page.locator('select').first().selectOption('oidc');
   await page.locator('input[name="role"]').fill('users');
-  // The UI starts a debounced role lookup when OIDC is selected. Let that
-  // lookup settle before clicking so it cannot cancel the explicit request.
-  await page.waitForTimeout(650);
-  const popupPromise = page.waitForEvent('popup', { timeout: 20000 });
+  // The UI starts debounced role lookups after each form change. Wait for
+  // their network requests and model updates before asking it to open OIDC.
+  await page.waitForTimeout(550);
+  await page.waitForLoadState('networkidle', { timeout: 20000 });
+  await page.waitForTimeout(200);
+  const popupPromise = page.waitForEvent('popup', { timeout: 10000 });
   await page.getByRole('button', { name: /Sign in with OIDC Provider/i }).click();
-  const popup = await popupPromise;
+  let popup;
+  try {
+    popup = await popupPromise;
+  } catch {
+    throw new Error('OpenBao did not open the OIDC provider: ' +
+                    (await page.locator('body').innerText()).slice(0, 260));
+  }
   await popup.waitForURL(/\/id\/realms\/heterocloud\//, { timeout: 20000 });
   await popup.locator('#username').fill(email);
   await popup.locator('#password').fill(password);

@@ -71,9 +71,32 @@ unset HNN_IAC_BECOME_PASSWORD
 
 The root token remains in the age-encrypted artifact. Before production secret
 writes, configure short-lived admin authentication and least-privilege policies,
-take an encrypted Raft snapshot to a separate recovery destination, test its
-restore, and revoke the initial root token. Raft replication alone does not
-replace an independent backup.
+test a Raft snapshot restore in an isolated environment, and revoke the initial
+root token. Raft replication alone does not replace an independent backup.
+
+`scripts/snapshot-openbao.py` streams a TLS-verified Raft snapshot directly
+into age encryption. It checks that the operator key can recover the snapshot
+without writing plaintext to disk. With `--inventory`, it places the ciphertext
+in root-only `/var/lib/heteronetwork/openbao-backups` on `uc-k8sp4`,
+`uc-k8sp5`, and `ichikawap1`, then checks each remote SHA-256. These are
+independent backup copies; the three live Raft voters remain on the dedicated
+masters. Run the command again for each backup point and retain copies offsite.
+It currently uses the initialization root token in the encrypted recovery
+artifact; replace that with a narrowly scoped backup identity before routine
+automation. The local operator SSH key and encrypted recovery artifact are on
+the same operator machine during setup, so copy the artifact to durable offline
+storage and separate the private key afterward.
+
+```bash
+read -rsp 'sudo password: ' HNN_IAC_BECOME_PASSWORD
+export HNN_IAC_BECOME_PASSWORD
+python3 scripts/snapshot-openbao.py \
+  --kubeconfig /secure/operator-kubeconfig \
+  --ssh-key /secure/operator-ssh-key \
+  --recovery-dir /secure/offline-recovery \
+  --inventory /secure/heteronetwork-inventory.json
+unset HNN_IAC_BECOME_PASSWORD
+```
 
 The live, credential-free infrastructure check is:
 

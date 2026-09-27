@@ -17,3 +17,4 @@ jobs:
       - run: python -m pip install PyYAML
       - run: helm lint deploy/chart
       - run: python scripts/verify-chart.py
+      - run: python -m py_compile scripts/bootstrap-openbao.py scripts/snapshot-openbao.py scripts/verify-openbao.py

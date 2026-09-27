@@ -78,13 +78,21 @@ def main():
             state = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError(name + ': invalid status response') from exc
+        mode = ('active' if state.get('is_self') is True and state.get('active_time')
+                else 'standby' if state.get('leader_address') and state.get('cluster_id')
+                else None)
         states.append({'pod': name, 'initialized': state.get('initialized'),
                        'sealed': state.get('sealed'), 'ha_enabled': state.get('ha_enabled'),
-                       'ha_mode': state.get('ha_mode')})
+                       'ha_mode': mode, 'cluster_id': state.get('cluster_id'),
+                       'leader_address': state.get('leader_address'),
+                       'raft_committed_index': state.get('raft_committed_index')})
 
     if not args.allow_sealed:
         assert all(s['initialized'] and not s['sealed'] and s['ha_enabled'] for s in states), states
         assert sorted(s['ha_mode'] for s in states) == ['active', 'standby', 'standby'], states
+        assert len({s['cluster_id'] for s in states}) == 1 and all(s['cluster_id'] for s in states), states
+        assert len({s['leader_address'] for s in states}) == 1, states
+        assert all((s['raft_committed_index'] or 0) > 0 for s in states), states
         assert statefulset['status'].get('readyReplicas') == 3, 'OpenBao StatefulSet is not Ready'
 
     print(json.dumps({'nodes': sorted(NODES), 'tls_ready': True,

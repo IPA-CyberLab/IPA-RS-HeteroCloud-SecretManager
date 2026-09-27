@@ -17,6 +17,17 @@ reachable through its TLS Kubernetes Service and the HeteroCloud gateway. The
 public gateway selects the current Raft leader via OpenBao's Kubernetes
 service-registration label so writes and following reads reach the same voter.
 
+Flash service secrets are registered from each service's HeteroCloud detail
+page. The API writes values to OpenBao KV v2 and stores only secret names in
+the Flash service spec. The Agent Injector makes selected secrets available
+as read-only files under `/vault/secrets/` inside the container. Each service
+has its own Kubernetes service account and can read only its own KV subtree.
+To reconcile the two Kubernetes auth roles after a deployment, sign in to the
+native UI as `owner` and run `scripts/configure-openbao.py --flash-auth-only
+--prompt-admin-token` with the kubeconfig, SSH key, recovery directory, and
+public origin shown by `--help`. Enter the short-lived owner token at the
+terminal prompt; do not paste it into a command argument or chat.
+
 ## Backup and recovery
 
 A snapshot Job runs daily at 02:17 UTC. It signs in with a snapshot-only

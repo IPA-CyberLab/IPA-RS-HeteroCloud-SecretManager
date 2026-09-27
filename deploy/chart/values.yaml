@@ -2,7 +2,36 @@ openbao:
   global:
     tlsDisable: false
   injector:
-    enabled: false
+    enabled: true
+    replicas: 2
+    externalBaoAddr: https://secrets.heterocloud.mizuame.app
+    agentImage:
+      registry: quay.io
+      repository: openbao/openbao
+      tag: 2.6.3@sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889
+    nodeSelector:
+      heteronetwork.io/control-plane-only: 'true'
+    tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: heteronetwork.io/control-plane-only
+      operator: Equal
+      value: 'true'
+      effect: NoSchedule
+    - key: heteronetwork.io/control-plane-only
+      operator: Equal
+      value: 'true'
+      effect: NoExecute
+    webhook:
+      failurePolicy: Fail
+      timeoutSeconds: 5
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: heterocloud-flash-workloads
+      matchConditions:
+      - name: secret-injection-requested
+        expression: 'has(object.metadata.annotations) && "vault.hashicorp.com/agent-inject" in object.metadata.annotations'
   csi:
     enabled: false
   server:

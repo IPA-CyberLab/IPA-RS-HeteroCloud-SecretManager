@@ -130,6 +130,40 @@ path "auth/oidc/role/users" { capabilities = ["read"] }
     })
 
 
+def ensure_flash_auth(api):
+    """Bind each Flash service account to only its own KV v2 subtree."""
+    ensure_kv(api)
+    ensure_auth(api, 'kubernetes', 'kubernetes')
+    auth = api.request('GET', 'sys/auth')['data']['kubernetes/']
+    accessor = auth['accessor']
+    assert accessor.startswith('auth_kubernetes_')
+    api.request('PUT', 'sys/policies/acl/heterosecrets-flash-workload', {
+        'policy': f'''
+path "secret/data/flash/{{{{identity.entity.aliases.{accessor}.metadata.service_account_name}}}}/*" {{
+  capabilities = ["read"]
+}}
+'''
+    })
+    api.request('POST', 'auth/kubernetes/role/heterosecrets-flash-workload', {
+        'bound_service_account_names': ['*'],
+        'bound_service_account_namespaces': ['heterocloud-flash-workloads'],
+        'token_policies': ['heterosecrets-flash-workload'],
+        'token_ttl': '15m', 'token_max_ttl': '1h',
+    })
+    api.request('PUT', 'sys/policies/acl/heterosecrets-flash-api', {
+        'policy': '''
+path "secret/data/flash/*" { capabilities = ["create", "update"] }
+path "secret/metadata/flash/*" { capabilities = ["read", "list", "delete"] }
+'''
+    })
+    api.request('POST', 'auth/kubernetes/role/heterosecrets-flash-api', {
+        'bound_service_account_names': ['heterocloud-heterocloud'],
+        'bound_service_account_namespaces': ['heterocloud'],
+        'token_policies': ['heterosecrets-flash-api'],
+        'token_ttl': '15m', 'token_max_ttl': '1h',
+    })
+
+
 def configure(api, config, origin):
     parsed = urlparse(origin)
     assert parsed.scheme == 'https' and parsed.netloc and not parsed.path
@@ -194,6 +228,7 @@ path "sys/storage/raft/snapshot" { capabilities = ["read"] }
         'token_ttl': '15m', 'token_max_ttl': '15m',
     })
     ensure_restore_auth(api)
+    ensure_flash_auth(api)
 
     mounts = api.request('GET', 'sys/auth')['data']
     assert mounts['oidc/']['type'] == 'oidc'
@@ -214,13 +249,15 @@ def main():
     parser.add_argument('--public-origin', required=True)
     parser.add_argument('--restore-auth-only', action='store_true',
                         help='Reconcile only the read-only isolated-restore identity')
+    parser.add_argument('--flash-auth-only', action='store_true',
+                        help='Reconcile only Flash workload and HeteroCloud API identities')
     parser.add_argument('--prompt-admin-token', action='store_true',
                         help='Read a short-lived owner token from the terminal')
     parser.add_argument('--port', type=int, default=18420)
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
-    config = None if args.restore_auth_only else json.load(sys.stdin)
+    config = None if args.restore_auth_only or args.flash_auth_only else json.load(sys.stdin)
     encrypted = args.recovery_dir / 'openbao-init.json.age'
     admin_token = getpass.getpass('OpenBao owner token: ') if args.prompt_admin_token else None
     if config is not None:
@@ -254,9 +291,13 @@ def main():
             api = API(active, args.port, ca, admin_token)
             if args.restore_auth_only:
                 ensure_restore_auth(api)
+            elif args.flash_auth_only:
+                ensure_flash_auth(api)
             else:
                 configure(api, config, args.public_origin)
-    if args.restore_auth_only:
+    if args.flash_auth_only:
+        print(json.dumps({'flash_auth_configured': True, 'leader': active}))
+    elif args.restore_auth_only:
         print(json.dumps({'restore_auth_configured': True, 'leader': active}))
     else:
         print(json.dumps({'configured': True, 'leader': active,

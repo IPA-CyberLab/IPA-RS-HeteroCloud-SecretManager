@@ -61,6 +61,15 @@ def main():
     assert 'ALL' in server['securityContext']['capabilities']['drop']
     assert pod['securityContext']['runAsNonRoot'] is True
     assert by_kind['NetworkPolicy', 'openbao-server']['spec']['policyTypes'] == ['Ingress']
+    injector = by_kind['Deployment', 'openbao-agent-injector']['spec']
+    assert injector['replicas'] == 2
+    assert injector['template']['spec']['nodeSelector'] == {'heteronetwork.io/control-plane-only': 'true'}
+    assert any(env['name'] == 'AGENT_INJECT_VAULT_ADDR' and env['value'] == 'https://secrets.heterocloud.mizuame.app'
+               for env in injector['template']['spec']['containers'][0]['env'])
+    webhook = by_kind['MutatingWebhookConfiguration', 'openbao-agent-injector-cfg']['webhooks'][0]
+    assert webhook['failurePolicy'] == 'Fail'
+    assert webhook['namespaceSelector']['matchLabels']['kubernetes.io/metadata.name'] == 'heterocloud-flash-workloads'
+    assert 'vault.hashicorp.com/agent-inject' in webhook['matchConditions'][0]['expression']
     expanded = subprocess.check_output(
         [os.environ.get('HELM', 'helm'), 'template', 'openbao', str(ROOT / 'deploy/chart'),
          '--namespace', 'openbao', '--skip-tests',

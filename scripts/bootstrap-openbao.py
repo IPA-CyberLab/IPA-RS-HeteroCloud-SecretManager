@@ -231,6 +231,10 @@ def unseal(api, pod, shares):
                              json.dumps({'key': share.decode('ascii').strip()}).encode())
         if not status['sealed']:
             return
+    for _ in range(30):
+        if not api.request(pod, 'sys/seal-status')['sealed']:
+            return
+        time.sleep(1)
     require(False, f'{pod} did not unseal with the two host-held shares')
 
 

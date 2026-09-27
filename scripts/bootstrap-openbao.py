@@ -65,7 +65,8 @@ def ssh_sudo(args, address, script, data=b'', *, missing_ok=False):
 
 def host_share(args, address):
     return ssh_sudo(args, address,
-                    f'test -f {CRED} || exit 44; systemd-creds decrypt {CRED} -',
+                    f'test -f {CRED} || exit 44; '
+                    f'systemd-creds decrypt --name=unseal-share {CRED} -',
                     missing_ok=True)
 
 
@@ -294,6 +295,7 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, RuntimeError, ValueError, KeyError, TypeError,
-            json.JSONDecodeError, subprocess.TimeoutExpired):
-        print('OpenBao bootstrap failed; protected values were not printed.', file=sys.stderr)
+            json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        print(f'OpenBao bootstrap failed: {error}. Protected values were not printed.',
+              file=sys.stderr)
         sys.exit(1)

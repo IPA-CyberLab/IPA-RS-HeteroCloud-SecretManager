@@ -67,9 +67,11 @@ try {
       body: JSON.stringify({ data: { checked: 'yes' } }),
     });
     let read;
+    let readRetries = 0;
     for (let attempt = 0; attempt < 20; attempt++) {
       read = await fetch(path, { headers });
       if (read.status !== 404) break;
+      readRetries++;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     const saved = read.ok ? await read.json() : null;
@@ -77,17 +79,20 @@ try {
     const owner = await fetch('/v1/secret/data/system/restore-probe', { headers });
     return { token_found: true, lookup_status: lookup.status,
              personal_write: write.status, personal_read: read.status,
+             read_retries: readRetries,
              personal_value: saved?.data?.data?.checked,
              personal_delete: removed.status, owner_probe_status: owner.status };
   });
   if (access.lookup_status !== 200 || access.personal_write !== 200 ||
-      access.personal_read !== 200 || access.personal_value !== 'yes' ||
+      access.personal_read !== 200 || access.read_retries !== 0 ||
+      access.personal_value !== 'yes' ||
       access.personal_delete !== 204 || access.owner_probe_status !== 403) {
     throw new Error('OIDC user privileges differ from the expected personal KV policy: ' +
                     JSON.stringify(access));
   }
   console.log(JSON.stringify({ oidc_login: true, signed_in_url: page.url(),
-                               personal_kv: true, owner_probe_status: access.owner_probe_status }));
+                               personal_kv: true, read_retries: access.read_retries,
+                               owner_probe_status: access.owner_probe_status }));
 } finally {
   await browser.close();
 }

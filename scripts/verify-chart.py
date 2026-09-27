@@ -78,6 +78,8 @@ def main():
     assert enabled['HTTPRoute', 'openbao-public']['spec']['parentRefs'][0]['name'] == 'heterocloud-edge'
     backend = enabled['Backend', 'openbao-api']['spec']
     assert backend['tls']['caCertificateRefs'][0]['name'] == 'openbao-server-tls'
+    assert backend['endpoints'][0]['fqdn']['hostname'] == 'openbao-active.openbao.svc.cluster.local'
+    assert backend['tls']['sni'] == 'openbao-active.openbao.svc.cluster.local'
     print(f'validated {len(objects)} rendered resources, three dedicated Raft volumes and TLS server pods')
 
 

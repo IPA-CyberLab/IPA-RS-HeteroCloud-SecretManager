@@ -12,7 +12,9 @@ The deployment is GitOps-managed through the OpenBao Argo CD application in
 public route, network policy, and backup CronJob. The three Raft voters each
 have an encrypted local disk on `uc-k8sp1`, `uc-k8sp2`, or `uc-k8s3p`. These
 control-plane hosts admit no other application workloads. The service is only
-reachable through its TLS Kubernetes Service and the HeteroCloud gateway.
+reachable through its TLS Kubernetes Service and the HeteroCloud gateway. The
+public gateway selects the current Raft leader via OpenBao's Kubernetes
+service-registration label so writes and following reads reach the same voter.
 
 ## Backup and recovery
 

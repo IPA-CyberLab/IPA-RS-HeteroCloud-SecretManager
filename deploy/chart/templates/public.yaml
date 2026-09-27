@@ -39,4 +39,5 @@ spec:
         - group: gateway.envoyproxy.io
           kind: Backend
           name: openbao-api
+          weight: 1
 {{- end }}

@@ -1,108 +1,78 @@
 # Hetero Secret Manager
 
-OpenBao is deployed by Argo CD from `deploy/chart` onto the three dedicated
-HeteroNetwork control-plane hosts. The chart includes a pinned, vendored
-official OpenBao chart, local Raft volumes, cert-manager certificates, and a
-namespace network policy. Host storage preparation and the admission policy
-live in [HeteroNetwork](https://github.com/IPA-CyberLab/IPA-RS-HeteroNetwork).
+Hetero Secret Manager is the OpenBao service for HeteroCloud. Its native UI is
+at <https://secrets.heterocloud.mizuame.app/ui/>. Select **OIDC**, then enter
+`users` for a personal vault or `owner` for the system owner. Keycloak handles
+sign-in. The `owner` role is bound to one existing Keycloak subject; ordinary
+users can only read and write `secret/data/users/<their entity ID>/*`.
 
-To validate a change without touching the cluster:
+The deployment is GitOps-managed through the OpenBao Argo CD application in
+[HeteroNetwork](https://github.com/IPA-CyberLab/IPA-RS-HeteroNetwork).
+`deploy/chart` pins the official OpenBao chart, the server image, TLS, the
+public route, network policy, and backup CronJob. The three Raft voters each
+have an encrypted local disk on `uc-k8sp1`, `uc-k8sp2`, or `uc-k8s3p`. These
+control-plane hosts admit no other application workloads. The service is only
+reachable through its TLS Kubernetes Service and the HeteroCloud gateway.
+
+## Backup and recovery
+
+A snapshot Job runs daily at 02:17 UTC. It signs in with a snapshot-only
+Kubernetes service account, streams the Raft snapshot through `age` encryption,
+and writes only ciphertext to a Longhorn volume replicated on three other
+hosts. `scripts/snapshot-openbao.py` can also take an on-demand snapshot and
+copy its ciphertext to the three backup hosts. The latest on-demand backup was
+restored in an isolated, loopback-only OpenBao process using
+`scripts/verify-restore.py`; the test checks a known KV v2 value and the OIDC
+role before deleting that process and its temporary storage.
+
+The bootstrap root token has been revoked. Two of the three Shamir shares are
+needed to unseal after a restart. Each host keeps only its own share in a
+host-bound systemd credential. The encrypted initialization artifact contains
+all three shares for disaster recovery; it uses a **different** age key from
+the snapshot backups. Keep both private age identities outside Git, Kubernetes,
+Terraform state, and routine backup hosts. Copy the recovery identity to
+controlled offline storage before relying on it for host-loss recovery. A
+single operator machine holding the identities is not an independent offline
+copy.
+
+For a live check:
 
 ```bash
-helm lint deploy/chart
-python3 scripts/verify-chart.py
+KUBECONFIG=/secure/operator-kubeconfig python3 scripts/verify-openbao.py
 ```
 
-Once Argo CD has synced the release, verify placement and TLS with
-`KUBECONFIG=/secure/operator-kubeconfig python3 scripts/verify-openbao.py
---allow-sealed`.
-
-## Deployment and key custody
-
-`openbao-0`, `openbao-1`, and `openbao-2` run only on `uc-k8sp1`, `uc-k8sp2`,
-and `uc-k8s3p`, one server on each host. Required pod anti-affinity and the
-three local PersistentVolumes ensure one Raft voter and one copy of the
-encrypted database on each physical host. No Longhorn replica or other
-application Pod is placed there. The existing Kubernetes control-plane and
-network Pods remain. The former PostgreSQL HA etcd voter on `uc-k8sp2` was
-moved to `ichikawap1` before OpenBao was scheduled.
-
-The official OpenBao Helm chart is pinned to `0.29.6`; the server image is
-OpenBao `2.6.3` pinned by OCI digest. The `openbao` ClusterIP Service exposes
-the TLS API to the Kubernetes cluster only. Its Raft port accepts traffic only
-from the other OpenBao Pods. The internal CA and server certificate are issued
-by cert-manager in the `openbao` namespace. The CA private key is a Kubernetes
-Secret; it is a TLS trust anchor, not an OpenBao unseal key. The cert-manager
-Secret must be backed up and access-restricted. Rotate the server Pods one at
-a time after cert-manager renews the mounted TLS certificate, because OpenBao
-does not automatically reload this chart's listener certificate.
-
-The encrypted OpenBao barrier root key is replicated by Raft. This is distinct
-from the initial **root token** and the three Shamir **unseal shares**. The
-cluster uses a 2-of-3 threshold. One share is encrypted under each custodian
-host's systemd host credential key, at
-`/etc/heteronetwork/openbao-custody/unseal-share.cred`. The initial root token
-and all three shares are also stored in one age-encrypted recovery artifact,
-`openbao-init.json.age`, outside the cluster. Its recipient is the operator's
-SSH public key; the matching private key must be stored separately and copied
-to durable, access-controlled offline storage. Do not place plaintext shares
-or tokens in Git, Terraform state, Kubernetes Secrets, environment variables,
-or logs. The current hosts do not support TPM-bound systemd credentials, so
-their encrypted shares are protected by host filesystem credentials and the
-2-of-3 threshold; a separate offline copy is required for host-loss recovery.
-
-Initialize and unseal over a verified TLS port-forward with
-`scripts/bootstrap-openbao.py`. It checks the TLS CA, encrypts the init response
-before writing it to disk, transfers each share through SSH into the host
-credential store, reads back all three shares, and unseals all Pods with shares
-from two distinct hosts. Re-running it uses the encrypted recovery artifact to
-resume after an interruption or unseal after a restart:
+For an on-demand encrypted backup and three checksum-verified ciphertext
+copies:
 
 ```bash
-read -rsp 'sudo password: ' HNN_IAC_BECOME_PASSWORD
-export HNN_IAC_BECOME_PASSWORD
-python3 scripts/bootstrap-openbao.py \
-  --kubeconfig /secure/operator-kubeconfig \
-  --ssh-key /secure/operator-ssh-key \
-  --known-hosts /secure/known_hosts \
-  --recovery-dir /secure/offline-recovery
-unset HNN_IAC_BECOME_PASSWORD
-```
-
-The root token remains in the age-encrypted artifact. Before production secret
-writes, configure short-lived admin authentication and least-privilege policies,
-test a Raft snapshot restore in an isolated environment, and revoke the initial
-root token. Raft replication alone does not replace an independent backup.
-
-`scripts/snapshot-openbao.py` streams a TLS-verified Raft snapshot directly
-into age encryption. It checks that the operator key can recover the snapshot
-without writing plaintext to disk. With `--inventory`, it places the ciphertext
-in root-only `/var/lib/heteronetwork/openbao-backups` on `uc-k8sp4`,
-`uc-k8sp5`, and `ichikawap1`, then checks each remote SHA-256. These are
-independent backup copies; the three live Raft voters remain on the dedicated
-masters. Run the command again for each backup point and retain copies offsite.
-It currently uses the initialization root token in the encrypted recovery
-artifact; replace that with a narrowly scoped backup identity before routine
-automation. The local operator SSH key and encrypted recovery artifact are on
-the same operator machine during setup, so copy the artifact to durable offline
-storage and separate the private key afterward.
-
-```bash
-read -rsp 'sudo password: ' HNN_IAC_BECOME_PASSWORD
-export HNN_IAC_BECOME_PASSWORD
 python3 scripts/snapshot-openbao.py \
   --kubeconfig /secure/operator-kubeconfig \
   --ssh-key /secure/operator-ssh-key \
-  --recovery-dir /secure/offline-recovery \
+  --snapshot-identity /secure/snapshot-identity.txt \
+  --recovery-dir /secure/secret-manager-recovery \
   --inventory /secure/heteronetwork-inventory.json
-unset HNN_IAC_BECOME_PASSWORD
 ```
 
-The live, credential-free infrastructure check is:
+For an isolated restore of a downloaded `.snap.age` file:
 
 ```bash
-KUBECONFIG=/secure/operator-kubeconfig python3 scripts/verify-openbao.py --allow-sealed
+python3 scripts/verify-restore.py --restore \
+  --kubeconfig /secure/operator-kubeconfig \
+  --ssh-key /secure/operator-ssh-key \
+  --recovery-identity /secure/recovery-identity.txt \
+  --recovery-dir /secure/secret-manager-recovery \
+  --snapshot-identity /secure/snapshot-identity.txt \
+  --snapshot /secure/secret-manager-recovery/openbao-raft-TIMESTAMP.snap.age
 ```
 
-After initializing and unsealing all three Pods, omit `--allow-sealed` to
-require three Ready Pods and one active/two standby servers over verified TLS.
+The restore probe is a deliberately non-sensitive test value. The first probe
+is created with `scripts/verify-restore.py --prepare` before the bootstrap root
+token is revoked. Later restore tests authenticate with a read-only,
+short-lived Kubernetes identity. To change the OIDC configuration after root
+token revocation, sign in as `owner` and run `scripts/deploy-auth.py
+--prompt-admin-token` with the remaining arguments shown by `--help`; the
+owner token is passed only through process memory.
+
+Run `helm lint deploy/chart` and `python3 scripts/verify-chart.py` before
+changing the chart. The repository's GitHub Actions workflow runs the same
+checks and syntax validation.

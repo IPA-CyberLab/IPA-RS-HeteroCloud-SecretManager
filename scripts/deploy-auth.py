@@ -16,12 +16,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig', type=Path, required=True)
     parser.add_argument('--ssh-key', type=Path, required=True)
+    parser.add_argument('--recovery-identity', type=Path,
+                        help='Dedicated age identity for the encrypted init artifact')
     parser.add_argument('--known-hosts', type=Path, required=True)
     parser.add_argument('--keycloak-host', required=True)
     parser.add_argument('--recovery-dir', type=Path, required=True)
     parser.add_argument('--public-origin', required=True)
     parser.add_argument('--oidc-issuer', required=True)
     parser.add_argument('--owner-email', required=True)
+    parser.add_argument('--prompt-admin-token', action='store_true',
+                        help='Read a short-lived OpenBao owner token from the terminal')
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
@@ -53,10 +57,16 @@ def main():
         raise RuntimeError('Remote Keycloak client reconciliation failed')
     client = json.loads(result.stdout)
     assert client['client_id'] and client['client_secret'] and client['owner_subject']
+    if args.prompt_admin_token:
+        client['admin_token'] = getpass.getpass('OpenBao owner token: ')
+        if not client['admin_token']:
+            raise RuntimeError('OpenBao owner token is required')
     command = [sys.executable, str(Path(__file__).parent / 'configure-openbao.py'),
                '--kubeconfig', str(args.kubeconfig), '--ssh-key', str(args.ssh_key),
                '--recovery-dir', str(args.recovery_dir),
                '--public-origin', args.public_origin]
+    if args.recovery_identity:
+        command += ['--recovery-identity', str(args.recovery_identity)]
     configured = subprocess.run(command, input=json.dumps(client).encode(),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 check=False, timeout=180)

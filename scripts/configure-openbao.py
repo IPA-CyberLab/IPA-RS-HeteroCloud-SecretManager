@@ -7,6 +7,7 @@ initial root token is written to disk, passed in argv, or printed.
 
 import argparse
 import base64
+import getpass
 import http.client
 import json
 import os
@@ -33,13 +34,14 @@ def command(argv, data=None):
 
 
 class Forward:
-    def __init__(self, kubeconfig, pod, port):
+    def __init__(self, kubeconfig, pod, port, target_port=8200):
         self.kubeconfig, self.pod, self.port = kubeconfig, pod, port
+        self.target_port = target_port
 
     def __enter__(self):
         self.proc = subprocess.Popen([
             'kubectl', '--kubeconfig', str(self.kubeconfig), '-n', 'openbao',
-            'port-forward', f'pod/{self.pod}', f'{self.port}:8200',
+            'port-forward', f'pod/{self.pod}', f'{self.port}:{self.target_port}',
             '--address', '127.0.0.1'], stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL)
         for _ in range(40):
@@ -114,6 +116,20 @@ def ensure_kv(api):
         assert mounts['secret/']['options']['version'] == '2'
 
 
+def ensure_restore_auth(api):
+    api.request('PUT', 'sys/policies/acl/heterosecrets-restore-probe', {'policy': '''
+path "secret/data/system/restore-probe" { capabilities = ["read"] }
+path "auth/oidc/role/users" { capabilities = ["read"] }
+'''})
+    ensure_auth(api, 'kubernetes', 'kubernetes')
+    api.request('POST', 'auth/kubernetes/role/heterosecrets-restore-probe', {
+        'bound_service_account_names': ['openbao'],
+        'bound_service_account_namespaces': ['openbao'],
+        'token_policies': ['heterosecrets-restore-probe'],
+        'token_ttl': '5m', 'token_max_ttl': '5m',
+    })
+
+
 def configure(api, config, origin):
     parsed = urlparse(origin)
     assert parsed.scheme == 'https' and parsed.netloc and not parsed.path
@@ -177,6 +193,7 @@ path "sys/storage/raft/snapshot" { capabilities = ["read"] }
         'token_policies': ['heterosecrets-snapshot'],
         'token_ttl': '15m', 'token_max_ttl': '15m',
     })
+    ensure_restore_auth(api)
 
     mounts = api.request('GET', 'sys/auth')['data']
     assert mounts['oidc/']['type'] == 'oidc'
@@ -191,15 +208,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig', type=Path, required=True)
     parser.add_argument('--ssh-key', type=Path, required=True)
+    parser.add_argument('--recovery-identity', type=Path,
+                        help='Dedicated age identity for the encrypted init artifact')
     parser.add_argument('--recovery-dir', type=Path, required=True)
     parser.add_argument('--public-origin', required=True)
+    parser.add_argument('--restore-auth-only', action='store_true',
+                        help='Reconcile only the read-only isolated-restore identity')
+    parser.add_argument('--prompt-admin-token', action='store_true',
+                        help='Read a short-lived owner token from the terminal')
     parser.add_argument('--port', type=int, default=18420)
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
-    config = json.load(sys.stdin)
+    config = None if args.restore_auth_only else json.load(sys.stdin)
     encrypted = args.recovery_dir / 'openbao-init.json.age'
-    root = json.loads(command(['age', '-d', '-i', str(args.ssh_key), str(encrypted)]))['root_token']
+    admin_token = getpass.getpass('OpenBao owner token: ') if args.prompt_admin_token else None
+    if config is not None:
+        admin_token = admin_token or config.pop('admin_token', None)
+    if not admin_token:
+        admin_token = json.loads(command(['age', '-d', '-i',
+                                          str(args.recovery_identity or args.ssh_key),
+                                          str(encrypted)]))['root_token']
     ca_b64 = command(['kubectl', '--kubeconfig', str(args.kubeconfig), '-n', 'openbao',
                       'get', 'secret', 'openbao-server-tls', '-o', 'jsonpath={.data.ca\\.crt}'])
     with tempfile.TemporaryDirectory(prefix='heterosecrets-config-', dir='/dev/shm') as tmp:
@@ -222,11 +251,18 @@ def main():
         if active is None:
             raise RuntimeError('No active OpenBao leader')
         with Forward(args.kubeconfig, active, args.port):
-            configure(API(active, args.port, ca, root), config, args.public_origin)
-    print(json.dumps({'configured': True, 'leader': active,
-                      'oidc_client_id': config['client_id'],
-                      'owner_subject_verified': True,
-                      'snapshot_auth': 'kubernetes-service-account'}))
+            api = API(active, args.port, ca, admin_token)
+            if args.restore_auth_only:
+                ensure_restore_auth(api)
+            else:
+                configure(api, config, args.public_origin)
+    if args.restore_auth_only:
+        print(json.dumps({'restore_auth_configured': True, 'leader': active}))
+    else:
+        print(json.dumps({'configured': True, 'leader': active,
+                          'oidc_client_id': config['client_id'],
+                          'owner_subject_verified': True,
+                          'snapshot_auth': 'kubernetes-service-account'}))
 
 
 if __name__ == '__main__':

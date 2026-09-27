@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Stream an OpenBao Raft snapshot into age, then copy ciphertext off-cluster.
 
-The initial root token is read from the age-encrypted initialization response
-in process memory. It is never put on a command line, in an environment
-variable, in an Ansible argument, or in a plaintext file.
+The snapshot-only identity is obtained using a short-lived Kubernetes service
+account token. Neither token is written to a file, environment or command line.
 """
 
 import argparse
 import base64
+import getpass
 import hashlib
 import http.client
 import json
@@ -149,11 +149,11 @@ def snapshot(kubeconfig, pod, port, context, token, recipient, target):
         raise
 
 
-def verify_encryption(encrypted_file, ssh_key, expected_digest=None):
+def verify_encryption(encrypted_file, age_identity, expected_digest=None):
     digest = hashlib.sha256()
     total = 0
     decrypted = subprocess.Popen(
-        ['age', '-d', '-i', str(ssh_key), str(encrypted_file)],
+        ['age', '-d', '-i', str(age_identity), str(encrypted_file)],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     while chunk := decrypted.stdout.read(1024 * 1024):
         digest.update(chunk)
@@ -161,8 +161,28 @@ def verify_encryption(encrypted_file, ssh_key, expected_digest=None):
     require(decrypted.wait(timeout=120) == 0 and
             total > 0 and (expected_digest is None or
                            digest.hexdigest() == expected_digest),
-            'Encrypted snapshot cannot be recovered with the operator key')
+            'Encrypted snapshot cannot be recovered with the snapshot identity')
     return total
+
+
+def snapshot_token(kubeconfig, pod, port, context):
+    jwt = kubectl(kubeconfig, '-n', 'openbao', 'create', 'token',
+                  'openbao-snapshot', '--duration=15m').decode().strip()
+    require(jwt, 'Kubernetes did not issue a snapshot service-account token')
+    with PortForward(kubeconfig, pod, port):
+        conn = connection(pod, port, context)
+        try:
+            body = json.dumps({'role': 'heterosecrets-snapshot', 'jwt': jwt}).encode()
+            conn.request('POST', '/v1/auth/kubernetes/login', body=body,
+                         headers={'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            require(response.status == 200,
+                    f'OpenBao Kubernetes login returned HTTP {response.status}')
+            token = json.load(response)['auth']['client_token']
+            require(token, 'OpenBao did not issue a snapshot token')
+            return token
+        finally:
+            conn.close()
 
 
 def inventory_host(inventory, host):
@@ -175,7 +195,8 @@ def inventory_host(inventory, host):
 
 
 def replicate(inventory, ssh_key, target, digest):
-    password = os.environ.get('HNN_IAC_BECOME_PASSWORD')
+    password = os.environ.get('HNN_IAC_BECOME_PASSWORD') or getpass.getpass(
+        'Replica hosts sudo password: ')
     require(password and '\n' not in password,
             'Sudo password is required in HNN_IAC_BECOME_PASSWORD for replica hosts')
     destination = f'{REMOTE_DIR}/{target.name}'
@@ -218,6 +239,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig', required=True, type=Path)
     parser.add_argument('--ssh-key', required=True, type=Path)
+    parser.add_argument('--snapshot-identity', required=True, type=Path)
     parser.add_argument('--recovery-dir', required=True, type=Path)
     parser.add_argument('--inventory', type=Path,
                         help='Ansible inventory for three off-cluster ciphertext replicas')
@@ -235,37 +257,37 @@ def main():
     require(args.ssh_key.is_file() and not args.ssh_key.is_symlink() and
             stat.S_IMODE(args.ssh_key.stat().st_mode) & 0o077 == 0,
             'Operator SSH key is missing or accessible to others')
-    recipient = args.recovery_dir / 'operator-ssh.pub'
-    require(recipient.is_file() and not recipient.is_symlink(),
-            'Operator age recipient is missing')
-    require(run(['ssh-keygen', '-y', '-f', str(args.ssh_key)]) == recipient.read_bytes(),
-            'Operator key does not match the recovery recipient')
-    artifact = args.recovery_dir / 'openbao-init.json.age'
-    require(artifact.is_file() and not artifact.is_symlink(),
-            'Encrypted initialization artifact is missing')
+    require(args.snapshot_identity.is_file() and not args.snapshot_identity.is_symlink()
+            and stat.S_IMODE(args.snapshot_identity.stat().st_mode) & 0o077 == 0,
+            'Snapshot age identity is missing or accessible to others')
+    recipient = args.recovery_dir / 'snapshot-age.pub'
+    public = run(['age-keygen', '-y', str(args.snapshot_identity)])
+    require(public.startswith(b'age1'), 'Snapshot identity is invalid')
+    if recipient.exists():
+        require(recipient.read_bytes() == public, 'Snapshot recipient has changed')
+    else:
+        recipient.write_bytes(public)
+        recipient.chmod(0o600)
     if args.replicate_existing:
         target = args.replicate_existing
         require(target.parent.resolve() == args.recovery_dir.resolve() and
                 target.is_file() and not target.is_symlink() and
                 target.name.startswith('openbao-raft-') and target.name.endswith('.snap.age'),
                 'Existing snapshot is outside the recovery directory or missing')
-        size = verify_encryption(target, args.ssh_key)
+        size = verify_encryption(target, args.snapshot_identity)
         pod = None
     else:
-        initialization = json.loads(run(['age', '-d', '-i', str(args.ssh_key),
-                                         str(artifact)]))
-        token = initialization.get('root_token')
-        require(isinstance(token, str) and token, 'Initialization root token is missing')
         ca = kubectl(args.kubeconfig, '-n', 'openbao', 'get', 'secret',
                      'openbao-server-tls', '-o', 'jsonpath={.data.ca\\.crt}')
         require(ca, 'OpenBao TLS CA is missing')
         context = ssl.create_default_context(cadata=base64.b64decode(ca).decode())
         pod = active_pod(args.kubeconfig, args.port, context)
+        token = snapshot_token(args.kubeconfig, pod, args.port, context)
         name = 'openbao-raft-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '.snap.age'
         target = args.recovery_dir / name
         temporary, raw_digest, size = snapshot(
             args.kubeconfig, pod, args.port, context, token, recipient, target)
-        verify_encryption(temporary, args.ssh_key, raw_digest)
+        verify_encryption(temporary, args.snapshot_identity, raw_digest)
         with temporary.open('rb') as file:
             os.fsync(file.fileno())
         os.replace(temporary, target)

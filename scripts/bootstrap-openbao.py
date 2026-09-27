@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Initialize and unseal the dedicated three-node OpenBao cluster.
 
-The first initialization response is encrypted to the operator's SSH key before
+The first initialization response is encrypted to a dedicated age recovery key before
 any share is copied to a host. Each host then seals one share with its systemd
 host credential key. The encrypted response is an independent recovery copy.
 No plaintext key or token is written to a persistent file or printed.
@@ -88,10 +88,16 @@ def stage_share(args, address, share):
 
 
 def operator_public_key(args):
-    result = run(['ssh-keygen', '-y', '-f', str(args.ssh_key)])
-    require(result.returncode == 0 and result.stdout.startswith(b'ssh-ed25519 '),
-            'The operator SSH key cannot be used as an age recipient')
-    public = args.recovery_dir / 'operator-ssh.pub'
+    if args.recovery_identity:
+        result = run(['age-keygen', '-y', str(args.recovery_identity)])
+        public = args.recovery_dir / 'recovery-age.pub'
+        require(result.returncode == 0 and result.stdout.startswith(b'age1'),
+                'The dedicated age recovery identity is unavailable')
+    else:
+        result = run(['ssh-keygen', '-y', '-f', str(args.ssh_key)])
+        public = args.recovery_dir / 'operator-ssh.pub'
+        require(result.returncode == 0 and result.stdout.startswith(b'ssh-ed25519 '),
+                'The operator SSH key cannot be used as an age recipient')
     if public.exists():
         require(public.read_bytes() == result.stdout, 'Operator recovery key changed')
     else:
@@ -106,7 +112,8 @@ def preflight_age(args, public):
     try:
         encrypted = run(['age', '-R', str(public), '-o', str(probe)], data=b'openbao-custody-probe')
         require(encrypted.returncode == 0, 'Operator recovery encryption is unavailable')
-        decrypted = run(['age', '-d', '-i', str(args.ssh_key), str(probe)])
+        decrypted = run(['age', '-d', '-i', str(args.recovery_identity or args.ssh_key),
+                         str(probe)])
         require(decrypted.returncode == 0 and decrypted.stdout == b'openbao-custody-probe',
                 'Operator recovery decryption is unavailable')
     finally:
@@ -137,7 +144,8 @@ def load_encrypted_init(args):
     target = args.recovery_dir / 'openbao-init.json.age'
     require(target.is_file() and not target.is_symlink(),
             'Encrypted initialization recovery artifact is missing')
-    result = run(['age', '-d', '-i', str(args.ssh_key), str(target)])
+    result = run(['age', '-d', '-i', str(args.recovery_identity or args.ssh_key),
+                  str(target)])
     require(result.returncode == 0, 'Cannot decrypt the initialization recovery artifact')
     return result.stdout
 
@@ -242,6 +250,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig', type=Path, required=True)
     parser.add_argument('--ssh-key', type=Path, required=True)
+    parser.add_argument('--recovery-identity', type=Path,
+                        help='Dedicated age identity for the encrypted init artifact')
     parser.add_argument('--known-hosts', type=Path, required=True)
     parser.add_argument('--recovery-dir', type=Path, required=True)
     parser.add_argument('--base-port', type=int, default=18400)
@@ -253,6 +263,10 @@ def main():
             'Operator SSH inputs are missing or linked')
     require(stat.S_IMODE(args.ssh_key.stat().st_mode) & 0o077 == 0,
             'Operator SSH key permissions are too broad')
+    if args.recovery_identity:
+        require(args.recovery_identity.is_file() and not args.recovery_identity.is_symlink()
+                and stat.S_IMODE(args.recovery_identity.stat().st_mode) & 0o077 == 0,
+                'Recovery age identity is missing or accessible to others')
     require(1024 < args.base_port < 65533, 'Invalid local port range')
     args.recovery_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     recovery_stat = args.recovery_dir.lstat()

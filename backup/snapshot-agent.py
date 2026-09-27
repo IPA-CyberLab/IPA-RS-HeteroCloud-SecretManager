@@ -46,13 +46,18 @@ def request(host, method, path, context, *, token=None, body=None, stream=False)
 
 
 def leader(context):
-    for host in PODS:
-        try:
-            result = request(host, 'GET', 'sys/leader', context)
-        except (OSError, RuntimeError):
-            continue
-        if result.get('is_self'):
-            return host
+    # A newly scheduled Pod may start before the CNI policy and DNS paths on
+    # its worker have converged. Allow a bounded warm-up before failing.
+    for attempt in range(12):
+        for host in PODS:
+            try:
+                result = request(host, 'GET', 'sys/leader', context)
+            except (OSError, RuntimeError):
+                continue
+            if result.get('is_self'):
+                return host
+        if attempt != 11:
+            time.sleep(5)
     raise RuntimeError('No reachable OpenBao leader')
 
 

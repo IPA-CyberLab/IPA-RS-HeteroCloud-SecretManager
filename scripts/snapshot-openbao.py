@@ -92,17 +92,21 @@ def connection(pod, port, context):
 
 def active_pod(kubeconfig, port, context):
     for pod in PODS:
-        with PortForward(kubeconfig, pod, port):
-            conn = connection(pod, port, context)
-            try:
-                conn.request('GET', '/v1/sys/leader')
-                response = conn.getresponse()
-                require(response.status == 200, 'OpenBao leader check failed')
-                leader = json.loads(response.read())
-                if leader.get('is_self') is True:
-                    return pod
-            finally:
-                conn.close()
+        try:
+            with PortForward(kubeconfig, pod, port):
+                conn = connection(pod, port, context)
+                try:
+                    conn.request('GET', '/v1/sys/leader')
+                    response = conn.getresponse()
+                    require(response.status == 200, 'OpenBao leader check failed')
+                    leader = json.loads(response.read())
+                    if leader.get('is_self') is True:
+                        return pod
+                finally:
+                    conn.close()
+        except (OSError, RuntimeError):
+            # The remaining two voters may still have Raft quorum.
+            continue
     raise RuntimeError('No active OpenBao Raft leader was found')
 
 

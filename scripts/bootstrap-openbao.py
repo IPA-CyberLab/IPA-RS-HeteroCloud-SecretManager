@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Initialize and unseal the dedicated three-node OpenBao cluster.
 
-The first initialization response is encrypted to a dedicated age recovery key before
+The first initialization response is encrypted to a dedicated age key before
 any share is copied to a host. Each host then seals one share with its systemd
-host credential key. The encrypted response is an independent recovery copy.
+host credential key. Retire the all-share artifact after the initial root token
+is revoked; later unseal operations read host-held shares and use two of them.
 No plaintext key or token is written to a persistent file or printed.
 """
 
 import argparse
 import base64
+import getpass
 import json
 import os
 from pathlib import Path
@@ -55,7 +57,7 @@ def ssh_sudo(args, address, script, data=b'', *, missing_ok=False):
         f'mizuame@{address}',
         "sudo -S -p '' /bin/sh -c " + shlex.quote(script),
     ]
-    password = os.environ['HNN_IAC_BECOME_PASSWORD'].encode() + b'\n'
+    password = args.sudo_password.encode() + b'\n'
     result = run(command, data=password + data, timeout=45)
     if missing_ok and result.returncode == 44:
         return None
@@ -166,6 +168,7 @@ class BaoAPI:
         self.args = args
         self.ca = ca
         self.processes = []
+        self.available = []
 
     def __enter__(self):
         try:
@@ -177,17 +180,20 @@ class BaoAPI:
                     '--address', '127.0.0.1',
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.processes.append(proc)
-            for index, proc in enumerate(self.processes):
-                port = self.args.base_port + index
                 for _ in range(40):
-                    require(proc.poll() is None, 'OpenBao port-forward failed')
+                    if proc.poll() is not None:
+                        break
                     try:
                         with socket.create_connection(('127.0.0.1', port), timeout=0.3):
+                            self.available.append(pod)
                             break
                     except OSError:
                         time.sleep(0.25)
-                else:
-                    raise RuntimeError('OpenBao port-forward timed out')
+                if pod not in self.available:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+            require(len(self.available) >= 2,
+                    'At least two OpenBao Pods must be reachable for Raft quorum')
         except Exception:
             self.__exit__()
             raise
@@ -204,6 +210,7 @@ class BaoAPI:
                 proc.wait()
 
     def request(self, pod, path, data=None):
+        require(pod in self.available, f'{pod} is unavailable')
         index = list(PODS).index(pod)
         port = self.args.base_port + index
         name = f'{pod}.openbao-internal.openbao.svc.cluster.local'
@@ -254,10 +261,16 @@ def main():
                         help='Dedicated age identity for the encrypted init artifact')
     parser.add_argument('--known-hosts', type=Path, required=True)
     parser.add_argument('--recovery-dir', type=Path, required=True)
+    parser.add_argument('--host-custody-only', action='store_true',
+                        help='Use only shares held on the three custodian hosts')
     parser.add_argument('--base-port', type=int, default=18400)
     args = parser.parse_args()
     os.umask(0o077)
-    require(os.environ.get('HNN_IAC_BECOME_PASSWORD'), 'Sudo password must be supplied in the process environment')
+    args.sudo_password = os.environ.pop('HNN_IAC_BECOME_PASSWORD', None)
+    if not args.sudo_password:
+        args.sudo_password = getpass.getpass('Custodian hosts sudo password: ')
+    require(args.sudo_password and '\n' not in args.sudo_password,
+            'A valid custodian sudo password is required')
     require(args.ssh_key.is_file() and not args.ssh_key.is_symlink()
             and args.known_hosts.is_file() and not args.known_hosts.is_symlink(),
             'Operator SSH inputs are missing or linked')
@@ -273,8 +286,6 @@ def main():
     require(stat.S_ISDIR(recovery_stat.st_mode) and recovery_stat.st_uid == os.geteuid()
             and stat.S_IMODE(recovery_stat.st_mode) & 0o077 == 0,
             'Recovery directory is accessible to another user')
-    public = operator_public_key(args)
-    preflight_age(args, public)
     cert = kubectl(args.kubeconfig, '-n', 'openbao', 'get', 'secret',
                    'openbao-server-tls', '-o', 'jsonpath={.data.ca\\.crt}')
     require(cert, 'OpenBao TLS CA is missing')
@@ -283,12 +294,23 @@ def main():
         ca.write_bytes(base64.b64decode(cert))
         with BaoAPI(args, ca) as api:
             backup = args.recovery_dir / 'openbao-init.json.age'
-            initialized = api.request('openbao-0', 'sys/init')['initialized']
-            if backup.exists():
+            used_backup = backup.exists() and not args.host_custody_only
+            initialized = api.request(api.available[0], 'sys/init')['initialized']
+            if used_backup:
                 require(initialized, 'Recovery artifact exists but OpenBao is not initialized')
+                require(len(api.available) == len(PODS),
+                        'All three OpenBao Pods are required while staging initial shares')
+                public = operator_public_key(args)
+                preflight_age(args, public)
                 raw = load_encrypted_init(args)
-            else:
-                require(not initialized, 'OpenBao is initialized but no recovery artifact exists')
+                shares = init_response(raw)
+                for (_, address), share in zip(PODS.values(), shares):
+                    stage_share(args, address, share)
+            elif not initialized:
+                require(len(api.available) == len(PODS),
+                        'All three OpenBao Pods are required for initialization')
+                public = operator_public_key(args)
+                preflight_age(args, public)
                 for _, address in PODS.values():
                     require(host_share(args, address) is None,
                             f'An unexpected host share already exists on {address}')
@@ -297,16 +319,38 @@ def main():
                                  separators=(',', ':')).encode()
                 init_response(raw)
                 save_encrypted_init(args, public, raw)
-            shares = init_response(raw)
-            for (_, address), share in zip(PODS.values(), shares):
-                stage_share(args, address, share)
-            held = [host_share(args, address) for _, address in PODS.values()]
-            require(held == shares, 'One or more host-held shares differ from the recovery copy')
-            for pod in PODS:
-                unseal(api, pod, held)
-    print(json.dumps({'initialized': True, 'unsealed': sorted(PODS),
-                      'host_custodians': sorted(host for host, _ in PODS.values()),
-                      'recovery_artifact': str(args.recovery_dir / 'openbao-init.json.age')}))
+                shares = init_response(raw)
+                for (_, address), share in zip(PODS.values(), shares):
+                    stage_share(args, address, share)
+            held = []
+            for _, address in PODS.values():
+                try:
+                    held.append(host_share(args, address))
+                except RuntimeError:
+                    if used_backup or not initialized:
+                        raise
+                    held.append(None)
+            available_shares = [share for share in held if share]
+            require(len(available_shares) >= 2 and
+                    len(set(available_shares)) == len(available_shares),
+                    'At least two distinct host-held unseal shares are required')
+            if used_backup or not initialized:
+                require(len(available_shares) == 3,
+                        'Three host-held shares are required during initialization')
+            for share in available_shares:
+                require(len(base64.b64decode(share.strip(), validate=True)) >= 16,
+                        'A host-held unseal share is malformed')
+            if used_backup:
+                require(held == shares,
+                        'One or more host-held shares differ from the recovery copy')
+            for pod in api.available:
+                unseal(api, pod, available_shares)
+            unsealed_pods = sorted(api.available)
+    print(json.dumps({'initialized': True, 'unsealed': unsealed_pods,
+                      'host_custodians': sorted(host for (host, _), share in
+                                                zip(PODS.values(), held) if share),
+                      'recovery_artifact': str(backup) if used_backup else None,
+                      'host_custody_only': not used_backup}))
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ jobs:
       - run: helm lint deploy/chart
       - run: python scripts/verify-chart.py
       - run: python -m py_compile scripts/bootstrap-openbao.py scripts/snapshot-openbao.py scripts/verify-openbao.py scripts/configure-openbao.py scripts/deploy-auth.py scripts/verify-oidc-login.py scripts/verify-restore.py scripts/revoke-bootstrap-root.py backup/snapshot-agent.py
+      - run: python -m unittest discover -s tests
       - run: node --check scripts/verify-oidc-login.mjs
       - run: bash -n scripts/reconcile-keycloak-client.sh
   backup-image:

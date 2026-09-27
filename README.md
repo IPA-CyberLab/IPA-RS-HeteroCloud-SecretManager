@@ -23,20 +23,21 @@ A snapshot Job runs daily at 02:17 UTC. It signs in with a snapshot-only
 Kubernetes service account, streams the Raft snapshot through `age` encryption,
 and writes only ciphertext to a Longhorn volume replicated on three other
 hosts. `scripts/snapshot-openbao.py` can also take an on-demand snapshot and
-copy its ciphertext to the three backup hosts. The latest on-demand backup was
+copy its ciphertext to the three backup hosts. An encrypted backup was
 restored in an isolated, loopback-only OpenBao process using
 `scripts/verify-restore.py`; the test checks a known KV v2 value and the OIDC
 role before deleting that process and its temporary storage.
 
 The bootstrap root token has been revoked. Two of the three Shamir shares are
 needed to unseal after a restart. Each host keeps only its own share in a
-host-bound systemd credential. The encrypted initialization artifact contains
-all three shares for disaster recovery; it uses a **different** age key from
-the snapshot backups. Keep both private age identities outside Git, Kubernetes,
-Terraform state, and routine backup hosts. Copy the recovery identity to
-controlled offline storage before relying on it for host-loss recovery. A
-single operator machine holding the identities is not an independent offline
-copy.
+host-bound systemd credential. The current hosts use systemd's host key, not a
+TPM-bound key. The temporary all-share initialization artifact and its age key
+were retired after the root token was revoked. The three hosts are now the only
+unseal-share custodians. Losing two of them makes the snapshots unrecoverable
+unless independently held share backups are arranged. The snapshot age private
+key stays outside Git, Kubernetes, Terraform state, and backup hosts; copy it
+to controlled offline storage. A copy on the same operator machine is not an
+independent backup.
 
 For a live check:
 
@@ -62,19 +63,27 @@ For an isolated restore of a downloaded `.snap.age` file:
 python3 scripts/verify-restore.py --restore \
   --kubeconfig /secure/operator-kubeconfig \
   --ssh-key /secure/operator-ssh-key \
-  --recovery-identity /secure/recovery-identity.txt \
+  --known-hosts /secure/known_hosts \
   --recovery-dir /secure/secret-manager-recovery \
   --snapshot-identity /secure/snapshot-identity.txt \
   --snapshot /secure/secret-manager-recovery/openbao-raft-TIMESTAMP.snap.age
 ```
 
-The restore probe is a deliberately non-sensitive test value. The first probe
-is created with `scripts/verify-restore.py --prepare` before the bootstrap root
-token is revoked. Later restore tests authenticate with a read-only,
-short-lived Kubernetes identity. To change the OIDC configuration after root
-token revocation, sign in as `owner` and run `scripts/deploy-auth.py
---prompt-admin-token` with the remaining arguments shown by `--help`; the
-owner token is passed only through process memory.
+The restore probe is a deliberately non-sensitive test value. To make a new
+probe, sign in as `owner` and run:
+
+```bash
+python3 scripts/verify-restore.py --prepare --prompt-admin-token \
+  --kubeconfig /secure/operator-kubeconfig \
+  --ssh-key /secure/operator-ssh-key \
+  --recovery-dir /secure/secret-manager-recovery
+```
+
+Restore tests read two shares from separate custodian
+hosts and authenticate with a read-only, short-lived Kubernetes identity. To
+change the OIDC configuration, sign in as `owner` and run
+`scripts/deploy-auth.py --prompt-admin-token` with the remaining arguments
+shown by `--help`; the owner token is passed only through process memory.
 
 Run `helm lint deploy/chart` and `python3 scripts/verify-chart.py` before
 changing the chart. The repository's GitHub Actions workflow runs the same

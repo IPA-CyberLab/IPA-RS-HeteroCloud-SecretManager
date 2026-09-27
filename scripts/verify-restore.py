@@ -8,6 +8,7 @@ listener, and writes only to its own temporary directory. Cleanup is automatic.
 
 import argparse
 import base64
+import getpass
 import http.client
 import importlib.util
 import json
@@ -25,6 +26,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('configure_openbao', ROOT / 'scripts/configure-openbao.py')
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+BOOT_SPEC = importlib.util.spec_from_file_location('bootstrap_openbao',
+                                                    ROOT / 'scripts/bootstrap-openbao.py')
+BOOT = importlib.util.module_from_spec(BOOT_SPEC)
+BOOT_SPEC.loader.exec_module(BOOT)
 POD = 'openbao-1'
 PORT = 18430
 PROBE = 'secret/data/system/restore-probe'
@@ -64,31 +69,64 @@ def req(method, path, body=None, token=None, statuses=(200, 204)):
         conn.close()
 
 
-def source_api(args, root):
+def source_api(args, token):
     ca_b64 = kube(args.kubeconfig, 'get', 'secret', 'openbao-server-tls',
                   '-o', 'jsonpath={.data.ca\\.crt}')
     temporary = tempfile.TemporaryDirectory(prefix='openbao-restore-ca-', dir='/dev/shm')
     ca = Path(temporary.name) / 'ca.crt'
     ca.write_bytes(base64.b64decode(ca_b64))
-    return temporary, MODULE.API('openbao-0', 18431, ca, root)
+    return temporary, MODULE.API('openbao-0', 18431, ca, token)
 
 
-def prepare(args, root):
+def prepare(args, token):
     marker = secrets.token_hex(24)
     with MODULE.Forward(args.kubeconfig, 'openbao-0', 18431):
-        temporary, api = source_api(args, root)
+        temporary, api = source_api(args, token)
         try:
             api.request('POST', PROBE, {'data': {'marker': marker}})
             assert api.request('GET', PROBE)['data']['data']['marker'] == marker
         finally:
             temporary.cleanup()
     target = args.recovery_dir / 'restore-probe.json'
-    with target.open('x') as stream:
+    temporary_target = target.with_name('.restore-probe.json.tmp')
+    with temporary_target.open('x') as stream:
         json.dump({'marker': marker}, stream)
         stream.flush()
         os.fsync(stream.fileno())
-    target.chmod(0o600)
+    temporary_target.chmod(0o600)
+    os.replace(temporary_target, target)
+    directory = os.open(args.recovery_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     print('restore probe written; take a new encrypted snapshot before --restore')
+
+
+def custodian_shares(args):
+    if not args.known_hosts:
+        raise RuntimeError('--known-hosts is required to read the host-held shares')
+    password = os.environ.pop('HNN_IAC_BECOME_PASSWORD', None) or getpass.getpass(
+        'Custodian hosts sudo password: ')
+    if not password or '\n' in password:
+        raise RuntimeError('Invalid custodian sudo password')
+    args.sudo_password = password
+    shares = []
+    try:
+        for _, address in BOOT.PODS.values():
+            try:
+                share = BOOT.host_share(args, address)
+            except RuntimeError:
+                continue
+            if share:
+                shares.append(share.decode().strip())
+            if len(shares) == 2:
+                break
+    finally:
+        args.sudo_password = None
+    if len(shares) != 2 or shares[0] == shares[1]:
+        raise RuntimeError('Two distinct custodian shares are unavailable')
+    return shares
 
 
 def restore(args, shares):
@@ -110,6 +148,20 @@ def restore(args, shares):
              'cd /tmp/openbao-restore-test; '
              '/usr/bin/bao server -config=config.hcl </dev/null >server.log 2>&1 & '
              'echo $! >pid')
+        # kubectl port-forward exits if its first probe arrives before the
+        # process has opened the target port. Probe inside the Pod first.
+        for _ in range(120):
+            ready = subprocess.run([
+                'kubectl', '--kubeconfig', str(args.kubeconfig), '-n', 'openbao',
+                'exec', POD, '--', 'wget', '-qO-',
+                'http://127.0.0.1:18200/v1/sys/init'],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                check=False, timeout=10)
+            if ready.returncode == 0 and b'initialized' in ready.stdout:
+                break
+            time.sleep(.5)
+        else:
+            raise RuntimeError('isolated OpenBao listener did not become ready')
         with MODULE.Forward(args.kubeconfig, POD, PORT, target_port=18200):
             last_error = None
             for _ in range(240):
@@ -136,18 +188,24 @@ def restore(args, shares):
                 generated['root_token'])
             jwt = kube(args.kubeconfig, 'create', 'token', 'openbao',
                        '--duration=10m').decode().strip()
-            for _ in range(30):
+            time.sleep(2)
+            for _ in range(60):
                 try:
                     seal = req('GET', 'sys/seal-status')
                 except (OSError, RuntimeError):
                     time.sleep(1)
                     continue
                 if seal['sealed']:
-                    for share in shares:
-                        try:
+                    try:
+                        if seal.get('progress'):
+                            req('PUT', 'sys/unseal', {'reset': True})
+                        for share in shares:
                             seal = req('PUT', 'sys/unseal', {'key': share})
-                        except RuntimeError as exc:
-                            raise RuntimeError(f'isolated restored unseal failed: {exc}') from exc
+                    except RuntimeError:
+                        # Force-restore seals while Raft changes leadership.
+                        # Reset any partial attempt after the restore settles.
+                        time.sleep(1)
+                        continue
                     if seal['sealed']:
                         time.sleep(1)
                         continue
@@ -189,9 +247,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kubeconfig', required=True, type=Path)
     parser.add_argument('--ssh-key', required=True, type=Path)
+    parser.add_argument('--known-hosts', type=Path)
     parser.add_argument('--recovery-identity', type=Path,
-                        help='Dedicated age identity for the encrypted init artifact')
+                        help='Only needed to prepare a probe with a bootstrap root artifact')
     parser.add_argument('--recovery-dir', required=True, type=Path)
+    parser.add_argument('--prompt-admin-token', action='store_true',
+                        help='Read an OIDC owner token for --prepare')
     parser.add_argument('--snapshot-identity', type=Path)
     parser.add_argument('--snapshot', type=Path)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -200,15 +261,20 @@ def main():
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
-    init = json.loads(run(['age', '-d', '-i',
-                           str(args.recovery_identity or args.ssh_key),
-                           str(args.recovery_dir / 'openbao-init.json.age')]))
-    shares = init['keys_base64'][:2]
     if args.prepare:
-        prepare(args, init['root_token'])
+        if args.prompt_admin_token:
+            token = getpass.getpass('OpenBao owner token: ')
+        else:
+            artifact = args.recovery_dir / 'openbao-init.json.age'
+            if not artifact.is_file():
+                raise RuntimeError('--prompt-admin-token is required after root retirement')
+            token = json.loads(run(['age', '-d', '-i',
+                                    str(args.recovery_identity or args.ssh_key),
+                                    str(artifact)]))['root_token']
+        prepare(args, token)
     else:
         assert args.snapshot and args.snapshot_identity
-        restore(args, shares)
+        restore(args, custodian_shares(args))
 
 
 if __name__ == '__main__':

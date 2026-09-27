@@ -117,13 +117,13 @@ openbao:
           }
 
 public:
-  enabled: false
+  enabled: true
   hostname: secrets.heterocloud.mizuame.app
 
 backup:
-  enabled: false
+  enabled: true
   schedule: '17 2 * * *'
-  image: ''
-  recipient: ''
+  image: ghcr.io/ipa-cyberlab/ipa-rs-heterocloud-secretmanager-snapshot@sha256:3da57fed77040de6b9ccceb201e2cc40d94689ab6a7b521894ec7d09696c118b
+  recipient: age1tvt46eh35h6wnm76ldtedldtm2x36pqufehtd4pqgkc80tvvlpqs8qg86s
   storageClassName: longhorn
   size: 20Gi

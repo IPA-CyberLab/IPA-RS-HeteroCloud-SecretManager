@@ -66,7 +66,12 @@ try {
       method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ data: { checked: 'yes' } }),
     });
-    const read = await fetch(path, { headers });
+    let read;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      read = await fetch(path, { headers });
+      if (read.status !== 404) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
     const saved = read.ok ? await read.json() : null;
     const removed = await fetch(path, { method: 'DELETE', headers });
     const owner = await fetch('/v1/secret/data/system/restore-probe', { headers });

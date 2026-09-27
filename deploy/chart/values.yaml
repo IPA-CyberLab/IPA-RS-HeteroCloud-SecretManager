@@ -35,10 +35,10 @@ openbao:
     serviceAccount:
       name: openbao
       serviceDiscovery:
-        enabled: false
+        enabled: true
     service:
       active:
-        enabled: false
+        enabled: true
       standby:
         enabled: false
     networkPolicy:
@@ -107,6 +107,8 @@ openbao:
               leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
             }
           }
+
+          service_registration "kubernetes" {}
 
           audit "file" "stdout" {
             description = "Cluster audit trail"

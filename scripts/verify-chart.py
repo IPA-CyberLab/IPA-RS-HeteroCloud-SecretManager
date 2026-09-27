@@ -39,6 +39,7 @@ def main():
     cert = by_kind['Certificate', 'openbao-server']['spec']
     assert cert['secretName'] == 'openbao-server-tls'
     assert '*.openbao-internal.openbao.svc.cluster.local' in cert['dnsNames']
+    assert 'openbao-active.openbao.svc.cluster.local' in cert['dnsNames']
     statefulset = by_kind['StatefulSet', 'openbao']['spec']
     pod = statefulset['template']['spec']
     server = pod['containers'][0]
@@ -47,6 +48,11 @@ def main():
     assert statefulset['volumeClaimTemplates'][0]['spec']['storageClassName'] == 'openbao-local'
     assert pod['nodeSelector'] == {'heteronetwork.io/control-plane-only': 'true'}
     assert pod['serviceAccountName'] == 'openbao'
+    assert by_kind['Service', 'openbao-active']['spec']['selector']['openbao-active'] == 'true'
+    assert any(rule['resources'] == ['pods'] and 'patch' in rule['verbs']
+               for rule in by_kind['Role', 'openbao-discovery-role']['rules'])
+    values = yaml.safe_load((ROOT / 'deploy/chart/values.yaml').read_text())
+    assert 'service_registration "kubernetes" {}' in values['openbao']['server']['ha']['raft']['config']
     assert len(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']) >= 1
     assert server['image'].endswith('@' + SERVER_DIGEST)
     assert any(v['name'] == 'userconfig-openbao-server-tls' and v['secret']['secretName'] == 'openbao-server-tls'

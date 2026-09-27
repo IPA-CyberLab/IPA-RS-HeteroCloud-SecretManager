@@ -56,6 +56,7 @@ spec:
     - openbao.openbao
     - openbao.openbao.svc
     - openbao.openbao.svc.cluster.local
+    - openbao-active.openbao.svc.cluster.local
     - '*.openbao-internal.openbao.svc.cluster.local'
   usages:
     - server auth

@@ -55,6 +55,23 @@ def main():
     assert 'ALL' in server['securityContext']['capabilities']['drop']
     assert pod['securityContext']['runAsNonRoot'] is True
     assert by_kind['NetworkPolicy', 'openbao-server']['spec']['policyTypes'] == ['Ingress']
+    expanded = subprocess.check_output(
+        [os.environ.get('HELM', 'helm'), 'template', 'openbao', str(ROOT / 'deploy/chart'),
+         '--namespace', 'openbao', '--skip-tests',
+         '--set', 'backup.enabled=true',
+         '--set', 'backup.image=example.invalid/snapshot@sha256:' + '0' * 64,
+         '--set', 'backup.recipient=age1' + 'a' * 58,
+         '--set', 'public.enabled=true'], text=True)
+    enabled = {(obj['kind'], obj['metadata']['name']): obj
+               for obj in yaml.safe_load_all(expanded) if obj}
+    cron = enabled['CronJob', 'openbao-snapshot']['spec']
+    assert cron['concurrencyPolicy'] == 'Forbid'
+    snapshot_pod = cron['jobTemplate']['spec']['template']['spec']
+    assert snapshot_pod['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
+    assert enabled['PersistentVolumeClaim', 'openbao-snapshots']['spec']['storageClassName'] == 'longhorn'
+    assert enabled['HTTPRoute', 'openbao-public']['spec']['parentRefs'][0]['name'] == 'heterocloud-edge'
+    backend = enabled['Backend', 'openbao-api']['spec']
+    assert backend['tls']['caCertificateRefs'][0]['name'] == 'openbao-server-tls'
     print(f'validated {len(objects)} rendered resources, three dedicated Raft volumes and TLS server pods')
 
 

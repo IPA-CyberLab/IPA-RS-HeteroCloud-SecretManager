@@ -56,7 +56,8 @@ def main():
             assert pod['metadata']['namespace'] in expected_essential or pod in openbao, (
                 'Unexpected workload on a dedicated OpenBao host', pod['metadata']['namespace'], pod['metadata']['name'])
 
-    claims = resource('persistentvolumeclaims', '-n', 'openbao')['items']
+    claims = [c for c in resource('persistentvolumeclaims', '-n', 'openbao')['items']
+              if c['metadata']['name'].startswith('data-openbao-')]
     assert len(claims) == 3 and all(c['status']['phase'] == 'Bound' for c in claims), 'Raft PVCs are not all bound'
     pvs = {p['metadata']['name']: p for p in resource('persistentvolumes')['items']}
     for claim in claims:

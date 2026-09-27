@@ -115,3 +115,15 @@ openbao:
               log_raw = "false"
             }
           }
+
+public:
+  enabled: false
+  hostname: secrets.heterocloud.mizuame.app
+
+backup:
+  enabled: false
+  schedule: '17 2 * * *'
+  image: ''
+  recipient: ''
+  storageClassName: longhorn
+  size: 20Gi

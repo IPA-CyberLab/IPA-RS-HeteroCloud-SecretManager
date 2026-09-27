@@ -1,0 +1,116 @@
+{{- if .Values.backup.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-snapshot
+  namespace: openbao
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-token-reviewer
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: openbao
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-snapshot-recipient
+  namespace: openbao
+data:
+  recipient: {{ required "backup.recipient must be set" .Values.backup.recipient | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openbao-snapshots
+  namespace: openbao
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.backup.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-snapshot
+  namespace: openbao
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: openbao-snapshot
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: heteronetwork.io/control-plane-only
+                        operator: NotIn
+                        values: ['true']
+          containers:
+            - name: snapshot
+              image: {{ required "backup.image must be set" .Values.backup.image | quote }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: '1'
+                  memory: 512Mi
+              volumeMounts:
+                - name: snapshots
+                  mountPath: /backups
+                - name: tls
+                  mountPath: /etc/openbao-ca
+                  readOnly: true
+                - name: recipient
+                  mountPath: /etc/age-recipient
+                  readOnly: true
+          volumes:
+            - name: snapshots
+              persistentVolumeClaim:
+                claimName: openbao-snapshots
+            - name: tls
+              secret:
+                secretName: openbao-server-tls
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            - name: recipient
+              configMap:
+                name: openbao-snapshot-recipient
+{{- end }}

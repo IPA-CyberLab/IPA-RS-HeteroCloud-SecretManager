@@ -1,0 +1,117 @@
+openbao:
+  global:
+    tlsDisable: false
+  injector:
+    enabled: false
+  csi:
+    enabled: false
+  server:
+    image:
+      tag: 2.6.3@sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889
+    logFormat: json
+    updateStrategyType: OnDelete
+    podManagementPolicy: Parallel
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: '2'
+        memory: 2Gi
+    nodeSelector:
+      heteronetwork.io/control-plane-only: 'true'
+    tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: heteronetwork.io/control-plane-only
+      operator: Equal
+      value: 'true'
+      effect: NoSchedule
+    - key: heteronetwork.io/control-plane-only
+      operator: Equal
+      value: 'true'
+      effect: NoExecute
+    serviceAccount:
+      name: openbao
+      serviceDiscovery:
+        enabled: false
+    service:
+      active:
+        enabled: false
+      standby:
+        enabled: false
+    networkPolicy:
+      enabled: false
+    extraVolumes:
+    - type: secret
+      name: openbao-server-tls
+    dataStorage:
+      enabled: true
+      size: 20Gi
+      storageClass: openbao-local
+      accessMode: ReadWriteOnce
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+    statefulSet:
+      securityContext:
+        pod:
+          runAsNonRoot: true
+          runAsUser: 100
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        container:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+    ha:
+      enabled: true
+      replicas: 3
+      apiAddr: https://$(BAO_K8S_POD_NAME).openbao-internal.openbao.svc.cluster.local:8200
+      disruptionBudget:
+        enabled: true
+        maxUnavailable: 1
+      raft:
+        enabled: true
+        setNodeId: true
+        config: |
+          ui = true
+
+          listener "tcp" {
+            address = "[::]:8200"
+            cluster_address = "[::]:8201"
+            tls_cert_file = "/openbao/userconfig/openbao-server-tls/tls.crt"
+            tls_key_file = "/openbao/userconfig/openbao-server-tls/tls.key"
+            tls_min_version = "tls12"
+          }
+
+          storage "raft" {
+            path = "/openbao/data"
+            retry_join {
+              leader_api_addr = "https://openbao-0.openbao-internal.openbao.svc.cluster.local:8200"
+              leader_tls_servername = "openbao-0.openbao-internal.openbao.svc.cluster.local"
+              leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+            }
+            retry_join {
+              leader_api_addr = "https://openbao-1.openbao-internal.openbao.svc.cluster.local:8200"
+              leader_tls_servername = "openbao-1.openbao-internal.openbao.svc.cluster.local"
+              leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+            }
+            retry_join {
+              leader_api_addr = "https://openbao-2.openbao-internal.openbao.svc.cluster.local:8200"
+              leader_tls_servername = "openbao-2.openbao-internal.openbao.svc.cluster.local"
+              leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+            }
+          }
+
+          audit "file" "stdout" {
+            description = "Cluster audit trail"
+            options {
+              file_path = "stdout"
+              log_raw = "false"
+            }
+          }

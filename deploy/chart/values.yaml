@@ -123,7 +123,7 @@ public:
 backup:
   enabled: true
   schedule: '17 2 * * *'
-  image: ghcr.io/ipa-cyberlab/ipa-rs-heterocloud-secretmanager-snapshot@sha256:3da57fed77040de6b9ccceb201e2cc40d94689ab6a7b521894ec7d09696c118b
+  image: ghcr.io/ipa-cyberlab/ipa-rs-heterocloud-secretmanager-snapshot@sha256:3d18a109c9ac64e6b3977dfa7d4911a34734ae3e46bfa3ab39aa2514a6a9059c
   recipient: age1tvt46eh35h6wnm76ldtedldtm2x36pqufehtd4pqgkc80tvvlpqs8qg86s
   storageClassName: longhorn
   size: 20Gi

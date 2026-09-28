@@ -150,6 +150,7 @@ openbao:
 vpn:
   enabled: true
   hostname: secrets.heterocloud.mizuame.app
+  internalHostname: secrets.heteronetwork.internal
 
 backup:
   enabled: true

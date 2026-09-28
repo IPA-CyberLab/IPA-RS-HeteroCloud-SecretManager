@@ -22,10 +22,13 @@ def main():
     parser.add_argument('--keycloak-host', required=True)
     parser.add_argument('--recovery-dir', type=Path, required=True)
     parser.add_argument('--public-origin', required=True)
+    parser.add_argument('--legacy-origin')
     parser.add_argument('--oidc-issuer', required=True)
     parser.add_argument('--owner-email', required=True)
     parser.add_argument('--prompt-admin-token', action='store_true',
                         help='Read a short-lived OpenBao owner token from the terminal')
+    parser.add_argument('--keycloak-only', action='store_true',
+                        help='Reconcile redirect URIs without printing the client secret')
     args = parser.parse_args()
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
@@ -36,6 +39,7 @@ def main():
     remote_command = ' '.join(shlex.quote(part) for part in [
         'sudo', '-S', '-p', '', 'env',
         f'HETEROSECRETS_PUBLIC_ORIGIN={args.public_origin}',
+        f'HETEROSECRETS_LEGACY_ORIGIN={args.legacy_origin or ""}',
         f'HETEROSECRETS_OIDC_ISSUER={args.oidc_issuer}',
         f'HETEROSECRETS_OWNER_EMAIL={args.owner_email}',
         '/bin/bash', '-s',
@@ -57,6 +61,9 @@ def main():
         raise RuntimeError('Remote Keycloak client reconciliation failed')
     client = json.loads(result.stdout)
     assert client['client_id'] and client['client_secret'] and client['owner_subject']
+    if args.keycloak_only:
+        print(json.dumps({'keycloak_redirects_configured': True}))
+        return
     if args.prompt_admin_token:
         client['admin_token'] = getpass.getpass('OpenBao owner token: ')
         if not client['admin_token']:
@@ -65,6 +72,8 @@ def main():
                '--kubeconfig', str(args.kubeconfig), '--ssh-key', str(args.ssh_key),
                '--recovery-dir', str(args.recovery_dir),
                '--public-origin', args.public_origin]
+    if args.legacy_origin:
+        command += ['--legacy-origin', args.legacy_origin]
     if args.recovery_identity:
         command += ['--recovery-identity', str(args.recovery_identity)]
     configured = subprocess.run(command, input=json.dumps(client).encode(),

@@ -55,6 +55,7 @@ def main():
     assert 'public' not in values
     assert ('HTTPRoute', 'openbao-public') not in by_kind
     assert by_kind['HTTPRoute', 'openbao-vpn']['spec']['parentRefs'][0]['name'] == 'openbao-vpn'
+    assert 'secrets.heteronetwork.internal' in by_kind['HTTPRoute', 'openbao-vpn']['spec']['hostnames']
     assert 'service_registration "kubernetes" {}' in values['openbao']['server']['ha']['raft']['config']
     assert len(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']) >= 1
     assert server['image'].endswith('@' + SERVER_DIGEST)

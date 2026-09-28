@@ -2,7 +2,7 @@
 
 Hetero Secret Manager is the OpenBao service for HeteroCloud. Connect to the
 HeteroNetwork VPN before opening its native UI at
-<https://secrets.heterocloud.mizuame.app/ui/>. Select **OIDC**, then enter
+<http://secrets.heteronetwork.internal:21444/ui/>. Select **OIDC**, then enter
 `users` for a personal vault or `owner` for the system owner. Keycloak handles
 sign-in. The `owner` role is bound to one existing Keycloak subject; ordinary
 users can only read and write `secret/data/users/<their entity ID>/*`.

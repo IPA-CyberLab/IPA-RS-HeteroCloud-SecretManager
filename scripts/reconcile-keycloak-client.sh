@@ -3,7 +3,8 @@
 set -euo pipefail
 umask 077
 
-origin=${HETEROSECRETS_PUBLIC_ORIGIN:?HTTPS public origin is required}
+origin=${HETEROSECRETS_PUBLIC_ORIGIN:?OpenBao UI origin is required}
+legacy_origin=${HETEROSECRETS_LEGACY_ORIGIN:-}
 issuer=${HETEROSECRETS_OIDC_ISSUER:?Keycloak realm issuer is required}
 owner_email=${HETEROSECRETS_OWNER_EMAIL:?Exact owner email is required}
 client_id=${HETEROSECRETS_CLIENT_ID:-heterosecretmanager-web}
@@ -12,7 +13,8 @@ kcadm=${HETEROSECRETS_KCADM:-/opt/heteronetwork/keycloak/bin/kcadm.sh}
 server=${HETEROSECRETS_KEYCLOAK_SERVER:-http://127.0.0.1:18080}
 secret_file=${HETEROSECRETS_CLIENT_SECRET_FILE:-/etc/heteronetwork/keycloak/heterosecretmanager-client.secret}
 
-[[ $EUID == 0 && $origin =~ ^https://[^/]+$ && $issuer =~ ^https://[^/]+/id/realms/[A-Za-z0-9._-]+$ ]] || exit 2
+[[ $EUID == 0 && ( $origin =~ ^https://[^/]+$ || $origin =~ ^http://[a-z0-9.-]+\.heteronetwork\.internal:[0-9]+$ ) && $issuer =~ ^https://[^/]+/id/realms/[A-Za-z0-9._-]+$ ]] || exit 2
+[[ -z $legacy_origin || $legacy_origin =~ ^https://[^/]+$ ]] || exit 2
 [[ $client_id =~ ^[A-Za-z0-9._-]+$ && $owner_email =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || exit 2
 [[ -x $kcadm && -f $password_file && ! -L $password_file ]] || exit 2
 command -v jq >/dev/null
@@ -54,7 +56,7 @@ if [[ $count == 1 ]]; then
   [[ $(wc -c <"$secret_file") -ge 32 ]] || exit 2
 fi
 
-jq -n --arg id "$client_id" --arg origin "$origin" \
+jq -n --arg id "$client_id" --arg origin "$origin" --arg legacy "$legacy_origin" \
   --rawfile secret "$secret_file" '{
     clientId: $id,
     name: "Hetero Secret Manager",
@@ -71,12 +73,15 @@ jq -n --arg id "$client_id" --arg origin "$origin" \
     secret: ($secret | rtrimstr("\n")),
     rootUrl: $origin,
     baseUrl: ($origin + "/ui/"),
-    redirectUris: [
+    redirectUris: ([
       ($origin + "/v1/auth/oidc/callback"),
       ($origin + "/ui/vault/auth/oidc/oidc/callback"),
       "http://localhost:8250/oidc/callback"
-    ],
-    webOrigins: [$origin],
+    ] + (if $legacy == "" then [] else [
+      ($legacy + "/v1/auth/oidc/callback"),
+      ($legacy + "/ui/vault/auth/oidc/oidc/callback")
+    ] end)),
+    webOrigins: ([$origin] + (if $legacy == "" then [] else [$legacy] end)),
     attributes: {
       "pkce.code.challenge.method": "S256",
       "post.logout.redirect.uris": ($origin + "/*"),

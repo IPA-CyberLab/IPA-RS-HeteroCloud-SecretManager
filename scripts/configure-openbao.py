@@ -164,9 +164,14 @@ path "secret/metadata/flash/*" { capabilities = ["read", "list", "delete"] }
     })
 
 
-def configure(api, config, origin):
+def configure(api, config, origin, legacy_origin=None):
     parsed = urlparse(origin)
-    assert parsed.scheme == 'https' and parsed.netloc and not parsed.path
+    assert parsed.scheme in ('http', 'https') and parsed.netloc and not parsed.path
+    if parsed.scheme == 'http':
+        assert parsed.hostname and parsed.hostname.endswith('.heteronetwork.internal')
+    if legacy_origin:
+        legacy = urlparse(legacy_origin)
+        assert legacy.scheme == 'https' and legacy.netloc and not legacy.path
     issuer = config['issuer']
     assert issuer.startswith('https://') and '/realms/' in issuer
     assert config['client_id'] and config['client_secret'] and config['owner_subject']
@@ -174,6 +179,11 @@ def configure(api, config, origin):
     ui_callback = origin + '/ui/vault/auth/oidc/oidc/callback'
     cli_callback = 'http://localhost:8250/oidc/callback'
     redirects = [callback, ui_callback, cli_callback]
+    if legacy_origin:
+        redirects.extend([
+            legacy_origin + '/v1/auth/oidc/callback',
+            legacy_origin + '/ui/vault/auth/oidc/oidc/callback',
+        ])
 
     ensure_kv(api)
     api.request('PUT', 'sys/policies/acl/heterosecrets-user', {'policy': '''
@@ -247,6 +257,7 @@ def main():
                         help='Dedicated age identity for the encrypted init artifact')
     parser.add_argument('--recovery-dir', type=Path, required=True)
     parser.add_argument('--public-origin', required=True)
+    parser.add_argument('--legacy-origin')
     parser.add_argument('--restore-auth-only', action='store_true',
                         help='Reconcile only the read-only isolated-restore identity')
     parser.add_argument('--flash-auth-only', action='store_true',
@@ -305,7 +316,7 @@ def main():
             elif args.flash_auth_only:
                 ensure_flash_auth(api)
             else:
-                configure(api, config, args.public_origin)
+                configure(api, config, args.public_origin, args.legacy_origin)
     if args.flash_auth_only:
         print(json.dumps({'flash_auth_configured': True, 'leader': active}))
     elif args.restore_auth_only:

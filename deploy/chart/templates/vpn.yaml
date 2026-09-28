@@ -13,6 +13,7 @@ spec:
       sectionName: http
   hostnames:
     - {{ .Values.vpn.hostname | quote }}
+    - {{ .Values.vpn.internalHostname | quote }}
   rules:
     - matches:
         - path:

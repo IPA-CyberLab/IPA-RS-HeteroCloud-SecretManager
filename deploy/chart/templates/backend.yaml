@@ -1,0 +1,16 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: openbao-api
+  namespace: openbao
+spec:
+  endpoints:
+    - fqdn:
+        hostname: openbao-active.openbao.svc.cluster.local
+        port: 8200
+  tls:
+    sni: openbao-active.openbao.svc.cluster.local
+    caCertificateRefs:
+      - group: ''
+        kind: Secret
+        name: openbao-server-tls

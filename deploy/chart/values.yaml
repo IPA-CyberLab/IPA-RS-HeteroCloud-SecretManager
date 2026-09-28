@@ -151,6 +151,10 @@ public:
   enabled: true
   hostname: secrets.heterocloud.mizuame.app
 
+vpn:
+  enabled: true
+  hostname: secrets.heterocloud.mizuame.app
+
 backup:
   enabled: true
   schedule: '17 2 * * *'

@@ -53,7 +53,11 @@ def main():
     expected_essential = {'kube-system', 'kube-flannel'}
     for pod in pods:
         if pod['spec'].get('nodeName') in NODES:
-            assert pod['metadata']['namespace'] in expected_essential or pod in openbao, (
+            injector = (pod['metadata']['namespace'] == 'openbao'
+                        and pod['metadata']['name'].startswith('openbao-agent-injector-')
+                        and pod['spec']['serviceAccountName'] == 'openbao-agent-injector'
+                        and pod['metadata'].get('labels', {}).get('component') == 'webhook')
+            assert pod['metadata']['namespace'] in expected_essential or pod in openbao or injector, (
                 'Unexpected workload on a dedicated OpenBao host', pod['metadata']['namespace'], pod['metadata']['name'])
 
     claims = [c for c in resource('persistentvolumeclaims', '-n', 'openbao')['items']

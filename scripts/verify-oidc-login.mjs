@@ -8,7 +8,11 @@ const require = createRequire(join(root, 'package.json'));
 const { chromium } = require('playwright');
 const { origin, email, password } = JSON.parse(readFileSync(0, 'utf8'));
 
-const browser = await chromium.launch({ headless: true });
+const proxyServer = process.env.HETEROSECRETS_PLAYWRIGHT_PROXY;
+const browser = await chromium.launch({
+  headless: true,
+  ...(proxyServer ? { proxy: { server: proxyServer } } : {}),
+});
 try {
   const page = await browser.newPage();
   await page.goto(origin + '/ui/', { waitUntil: 'networkidle', timeout: 20000 });

@@ -57,6 +57,10 @@ def main():
     assert by_kind['HTTPRoute', 'openbao-vpn']['spec']['parentRefs'][0]['name'] == 'openbao-vpn'
     assert 'secrets.heteronetwork.internal' in by_kind['HTTPRoute', 'openbao-vpn']['spec']['hostnames']
     assert 'service_registration "kubernetes" {}' in values['openbao']['server']['ha']['raft']['config']
+    assert 'ui = false' in values['openbao']['server']['ha']['raft']['config']
+    assert by_kind['HTTPRoute', 'openbao-vpn']['spec']['rules'][0]['matches'][0]['path'] == {
+        'type': 'PathPrefix', 'value': '/v1'
+    }
     assert len(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']) >= 1
     assert server['image'].endswith('@' + SERVER_DIGEST)
     assert any(v['name'] == 'userconfig-openbao-server-tls' and v['secret']['secretName'] == 'openbao-server-tls'
@@ -90,6 +94,7 @@ def main():
     assert enabled['PersistentVolumeClaim', 'openbao-snapshots']['spec']['storageClassName'] == 'longhorn'
     assert ('HTTPRoute', 'openbao-public') not in enabled
     assert enabled['HTTPRoute', 'openbao-vpn']['spec']['parentRefs'][0]['name'] == 'openbao-vpn'
+    assert enabled['HTTPRoute', 'openbao-vpn']['spec']['rules'][0]['matches'][0]['path']['value'] == '/v1'
     backend = enabled['Backend', 'openbao-api']['spec']
     assert backend['tls']['caCertificateRefs'][0]['name'] == 'openbao-server-tls'
     assert backend['endpoints'][0]['fqdn']['hostname'] == 'openbao-active.openbao.svc.cluster.local'

@@ -1,15 +1,12 @@
 # Hetero Secret Manager
 
-Hetero Secret Manager is the OpenBao service for HeteroCloud. Users manage
-Flash container secrets in the HeteroCloud console at `/secrets`: select a
-Flash service, register a value, then attach it to the container. The native
-OpenBao UI is a separate personal vault. After connecting to the HeteroNetwork
-VPN, open <http://secrets.heteronetwork.internal:21444/ui/vault/auth?with=oidc/>
-for that vault. Sign in with **OIDC**; the default role is `users`, while
-`owner` is reserved for the system owner. Keycloak handles sign-in. The `owner`
-role is bound to one existing Keycloak subject; ordinary users can only read
-and write `secret/data/users/<their entity ID>/*`. Personal-vault entries do
-not automatically appear in Flash containers.
+Hetero Secret Manager is the OpenBao backend for HeteroCloud. Users configure
+container secrets in each Flash service's detail page. The API stores values
+in OpenBao and mounts selected secrets as read-only files in the container.
+OpenBao's native UI is disabled. Its VPN gateway serves only the `/v1` API.
+Keycloak OIDC remains available for operator CLI access. The `owner` role is
+bound to one existing Keycloak subject; ordinary users can access only their
+own `secret/data/users/<their entity ID>/*` subtree through the API.
 
 The deployment is GitOps-managed through the OpenBao Argo CD application in
 [HeteroNetwork](https://github.com/IPA-CyberLab/IPA-RS-HeteroNetwork).
@@ -22,17 +19,18 @@ external HTTP gateways return 403. A ClusterIP-only Envoy Gateway selects the
 current Raft leader via OpenBao's Kubernetes
 service-registration label so writes and following reads reach the same voter.
 
-Flash service secrets are registered from the HeteroCloud Secret Manager page
-or each service's detail page. The API writes values to OpenBao KV v2 and
+Flash service secrets are registered from each service's detail page. The API
+writes values to OpenBao KV v2 and
 stores only secret names in the Flash service spec. The Agent Injector makes
 selected secrets available as read-only files under `/vault/secrets/` inside
 the container. Each service has its own Kubernetes service account and can
 read only its own KV subtree.
-To reconcile the two Kubernetes auth roles after a deployment, sign in to the
-native UI as `owner` and run `scripts/configure-openbao.py --flash-auth-only
---prompt-admin-token` with the kubeconfig, SSH key, recovery directory, and
-public origin shown by `--help`. Enter the short-lived owner token at the
-terminal prompt; do not paste it into a command argument or chat.
+To reconcile the two Kubernetes auth roles after a deployment, use an owner
+token obtained through the OpenBao CLI's OIDC login and run
+`scripts/configure-openbao.py --flash-auth-only --prompt-admin-token` with the
+kubeconfig, SSH key, recovery directory, and API origin shown by `--help`.
+Enter the short-lived owner token at the terminal prompt; do not paste it into
+a command argument or chat.
 
 ## Backup and recovery
 

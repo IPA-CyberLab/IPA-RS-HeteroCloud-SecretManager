@@ -18,7 +18,7 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: /v1
       backendRefs:
         - group: gateway.envoyproxy.io
           kind: Backend

@@ -108,7 +108,7 @@ openbao:
         enabled: true
         setNodeId: true
         config: |
-          ui = true
+          ui = false
 
           listener "tcp" {
             address = "[::]:8200"

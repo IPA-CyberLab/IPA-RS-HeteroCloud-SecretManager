@@ -253,13 +253,24 @@ def main():
                         help='Reconcile only Flash workload and HeteroCloud API identities')
     parser.add_argument('--prompt-admin-token', action='store_true',
                         help='Read a short-lived owner token from the terminal')
+    parser.add_argument('--admin-token-stdin', action='store_true',
+                        help='Read a short-lived owner token from stdin for one-shot operator handoff')
     parser.add_argument('--port', type=int, default=18420)
     args = parser.parse_args()
+    if args.prompt_admin_token and args.admin_token_stdin:
+        parser.error('choose only one owner token input method')
+    if args.admin_token_stdin and not (args.flash_auth_only or args.restore_auth_only):
+        parser.error('--admin-token-stdin requires a scoped auth operation')
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
     config = None if args.restore_auth_only or args.flash_auth_only else json.load(sys.stdin)
     encrypted = args.recovery_dir / 'openbao-init.json.age'
-    admin_token = getpass.getpass('OpenBao owner token: ') if args.prompt_admin_token else None
+    if args.admin_token_stdin:
+        admin_token = sys.stdin.readline().rstrip('\r\n')
+        if not admin_token:
+            raise RuntimeError('OpenBao owner token is required')
+    else:
+        admin_token = getpass.getpass('OpenBao owner token: ') if args.prompt_admin_token else None
     if config is not None:
         admin_token = admin_token or config.pop('admin_token', None)
     if not admin_token:

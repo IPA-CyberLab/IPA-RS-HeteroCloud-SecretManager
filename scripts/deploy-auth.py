@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import resource
 import shlex
+import stat
 import subprocess
 import sys
 
@@ -27,9 +28,15 @@ def main():
     parser.add_argument('--owner-email', required=True)
     parser.add_argument('--prompt-admin-token', action='store_true',
                         help='Read a short-lived OpenBao owner token from the terminal')
+    parser.add_argument('--owner-token-fifo', type=Path,
+                        help='Read a short-lived owner token from a private FIFO')
     parser.add_argument('--keycloak-only', action='store_true',
                         help='Reconcile redirect URIs without printing the client secret')
     args = parser.parse_args()
+    if args.prompt_admin_token and args.owner_token_fifo:
+        parser.error('choose one owner-token input method')
+    if args.keycloak_only and (args.prompt_admin_token or args.owner_token_fifo):
+        parser.error('keycloak-only cannot use an owner token')
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     os.umask(0o077)
     script = (Path(__file__).parent / 'reconcile-keycloak-client.sh').read_bytes()
@@ -68,6 +75,16 @@ def main():
         client['admin_token'] = getpass.getpass('OpenBao owner token: ')
         if not client['admin_token']:
             raise RuntimeError('OpenBao owner token is required')
+    elif args.owner_token_fifo:
+        metadata = args.owner_token_fifo.stat()
+        if (args.owner_token_fifo.is_symlink() or not stat.S_ISFIFO(metadata.st_mode)
+                or metadata.st_mode & 0o077 or metadata.st_uid != os.geteuid()):
+            raise RuntimeError('Owner-token FIFO must be private and mode 0600')
+        with args.owner_token_fifo.open(encoding='utf-8') as stream:
+            token = stream.readline(4096).strip()
+        if not token or len(token) >= 4095 or any(ch.isspace() for ch in token):
+            raise RuntimeError('Invalid owner token received from FIFO')
+        client['admin_token'] = token
     command = [sys.executable, str(Path(__file__).parent / 'configure-openbao.py'),
                '--kubeconfig', str(args.kubeconfig), '--ssh-key', str(args.ssh_key),
                '--recovery-dir', str(args.recovery_dir),

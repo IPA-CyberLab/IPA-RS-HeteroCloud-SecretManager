@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 PODS = ('openbao-0', 'openbao-1', 'openbao-2')
@@ -164,6 +164,20 @@ path "secret/metadata/flash/*" { capabilities = ["read", "list", "delete"] }
     })
 
 
+def verify_oidc_auth_url(api, role, origin):
+    """Reject an OIDC role that returns HTTP 200 without a usable login URL."""
+    redirect = origin + '/ui/vault/auth/oidc/oidc/callback'
+    response = api.request('POST', 'auth/oidc/oidc/auth_url', {
+        'role': role, 'redirect_uri': redirect,
+    })
+    auth_url = (response.get('data') or {}).get('auth_url')
+    if not auth_url:
+        raise RuntimeError(f'OIDC role {role} has no auth_url for {origin}')
+    parsed = urlparse(auth_url)
+    if parsed.scheme != 'https' or parse_qs(parsed.query).get('redirect_uri') != [redirect]:
+        raise RuntimeError(f'OIDC role {role} returned an invalid auth_url for {origin}')
+
+
 def configure(api, config, origin, legacy_origin=None):
     parsed = urlparse(origin)
     assert parsed.scheme in ('http', 'https') and parsed.netloc and not parsed.path
@@ -247,6 +261,10 @@ path "sys/storage/raft/snapshot" { capabilities = ["read"] }
     assert owner['bound_claims']['sub'] == config['owner_subject']
     user = api.request('GET', 'auth/oidc/role/users')['data']
     assert 'heterosecrets-user' in user.get('token_policies', user.get('policies', []))
+    for candidate_origin in (origin, legacy_origin):
+        if candidate_origin:
+            for role in ('owner', 'users'):
+                verify_oidc_auth_url(api, role, candidate_origin)
 
 
 def main():

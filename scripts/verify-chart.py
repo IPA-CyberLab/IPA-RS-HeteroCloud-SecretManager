@@ -52,6 +52,9 @@ def main():
     assert any(rule['resources'] == ['pods'] and 'patch' in rule['verbs']
                for rule in by_kind['Role', 'openbao-discovery-role']['rules'])
     values = yaml.safe_load((ROOT / 'deploy/chart/values.yaml').read_text())
+    assert 'public' not in values
+    assert ('HTTPRoute', 'openbao-public') not in by_kind
+    assert by_kind['HTTPRoute', 'openbao-vpn']['spec']['parentRefs'][0]['name'] == 'openbao-vpn'
     assert 'service_registration "kubernetes" {}' in values['openbao']['server']['ha']['raft']['config']
     assert len(pod['affinity']['podAntiAffinity']['requiredDuringSchedulingIgnoredDuringExecution']) >= 1
     assert server['image'].endswith('@' + SERVER_DIGEST)
@@ -84,7 +87,8 @@ def main():
     snapshot_pod = cron['jobTemplate']['spec']['template']['spec']
     assert snapshot_pod['affinity']['nodeAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
     assert enabled['PersistentVolumeClaim', 'openbao-snapshots']['spec']['storageClassName'] == 'longhorn'
-    assert enabled['HTTPRoute', 'openbao-public']['spec']['parentRefs'][0]['name'] == 'heterocloud-edge'
+    assert ('HTTPRoute', 'openbao-public') not in enabled
+    assert enabled['HTTPRoute', 'openbao-vpn']['spec']['parentRefs'][0]['name'] == 'openbao-vpn'
     backend = enabled['Backend', 'openbao-api']['spec']
     assert backend['tls']['caCertificateRefs'][0]['name'] == 'openbao-server-tls'
     assert backend['endpoints'][0]['fqdn']['hostname'] == 'openbao-active.openbao.svc.cluster.local'

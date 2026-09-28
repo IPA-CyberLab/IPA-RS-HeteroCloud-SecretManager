@@ -1,7 +1,8 @@
 # Hetero Secret Manager
 
-Hetero Secret Manager is the OpenBao service for HeteroCloud. Its native UI is
-at <https://secrets.heterocloud.mizuame.app/ui/>. Select **OIDC**, then enter
+Hetero Secret Manager is the OpenBao service for HeteroCloud. Connect to the
+HeteroNetwork VPN before opening its native UI at
+<https://secrets.heterocloud.mizuame.app/ui/>. Select **OIDC**, then enter
 `users` for a personal vault or `owner` for the system owner. Keycloak handles
 sign-in. The `owner` role is bound to one existing Keycloak subject; ordinary
 users can only read and write `secret/data/users/<their entity ID>/*`.
@@ -9,12 +10,12 @@ users can only read and write `secret/data/users/<their entity ID>/*`.
 The deployment is GitOps-managed through the OpenBao Argo CD application in
 [HeteroNetwork](https://github.com/IPA-CyberLab/IPA-RS-HeteroNetwork).
 `deploy/chart` pins the official OpenBao chart, the server image, TLS, the
-public route, network policy, and backup CronJob. The three Raft voters each
+VPN-only route, network policy, and backup CronJob. The three Raft voters each
 use node-local ext4 storage for OpenBao's barrier-encrypted Raft data on
 `uc-k8sp1`, `uc-k8sp2`, or `uc-k8s3p`. These control-plane hosts admit no other
-application workloads. The service is only
-reachable through its TLS Kubernetes Service and the HeteroCloud gateway. The
-public gateway selects the current Raft leader via OpenBao's Kubernetes
+application workloads. The hostname resolves only to VPN addresses, and its
+external HTTP gateways return 403. A ClusterIP-only Envoy Gateway selects the
+current Raft leader via OpenBao's Kubernetes
 service-registration label so writes and following reads reach the same voter.
 
 Flash service secrets are registered from each service's HeteroCloud detail

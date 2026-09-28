@@ -147,10 +147,6 @@ openbao:
             }
           }
 
-public:
-  enabled: true
-  hostname: secrets.heterocloud.mizuame.app
-
 vpn:
   enabled: true
   hostname: secrets.heterocloud.mizuame.app

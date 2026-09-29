@@ -1,8 +1,8 @@
 # Hetero Secret Manager
 
 Hetero Secret Manager is the OpenBao backend for HeteroCloud. Users configure
-container secrets in each Flash service's detail page. The API stores values
-in OpenBao and mounts selected secrets as read-only files in the container.
+container secrets in each Flash service's edit screen. The API stores values
+in OpenBao and passes selected secrets to the container as environment variables.
 OpenBao's native UI is disabled. Its VPN gateway serves only the `/v1` API.
 Keycloak OIDC remains available for operator CLI access. The `owner` role is
 bound to one existing Keycloak subject; ordinary users can access only their
@@ -19,12 +19,15 @@ external HTTP gateways return 403. A ClusterIP-only Envoy Gateway selects the
 current Raft leader via OpenBao's Kubernetes
 service-registration label so writes and following reads reach the same voter.
 
-Flash service secrets are registered from each service's detail page. The API
+Flash service secrets are registered from each service's edit screen. The API
 writes values to OpenBao KV v2 and
 stores only secret names in the Flash service spec. The Agent Injector makes
-selected secrets available as read-only files under `/vault/secrets/` inside
-the container. Each service has its own Kubernetes service account and can
-read only its own KV subtree.
+selected secrets available to a static startup launcher, which sets the requested
+environment variables before executing the image's original command. The
+intermediate files are memory-backed, and no Kubernetes Secret containing tenant
+values is created. Each service has its own Kubernetes service account and can
+read only its own KV subtree. Updating an attached value rolls the service so
+new containers receive the updated environment variable.
 To reconcile the two Kubernetes auth roles after a deployment, use an owner
 token obtained through the OpenBao CLI's OIDC login and run
 `scripts/configure-openbao.py --flash-auth-only --prompt-admin-token` with the
